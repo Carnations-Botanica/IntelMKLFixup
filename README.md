@@ -20,6 +20,10 @@ phases are complete. See [diagnostics and controls](docs/DEBUGGING.md) for boot
 arguments and exact log commands, and [emergency recovery](docs/RECOVERY.md)
 before attempting any controlled test.
 
+Whitelist release assets are handled only by the signed userspace mechanism
+described in [whitelist updates](docs/WHITELIST_UPDATES.md). The kernel extension
+does not contact GitHub or parse an external manifest.
+
 ## Credits & Thanks
 - [vit9696](https://github.com/vit9696) (and contributors) for [RestrictEvents](https://github.com/acidanthera/RestrictEvents), which served as the basis for this project.
 - [Tomnic](https://macos86.it/profile/69-tomnic/) for [the original patching guide](https://macos86.it/topic/5489-tutorial-for-patching-binaries-for-amd-hackintosh-compatibility/), which helped point me in the right direction.
