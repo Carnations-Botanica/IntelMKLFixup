@@ -41,11 +41,27 @@ static CsBlobGetString csBlobGetIdentity {nullptr};
 static CsBlobGetString csBlobGetTeamId {nullptr};
 static CsBlobGetHash csBlobGetCdHash {nullptr};
 static CsBlobGetFlags csBlobGetFlags {nullptr};
+static bool verboseLogging {false};
+static bool dryRunMode {false};
+static bool builtInOnlyRequested {false};
+
+enum class ImageResult : uint8_t {
+	NotCandidate,
+	Approved,
+	CodeBlobUnavailable,
+	SigningFlagsRejected,
+	SigningIdentifierRejected,
+	TeamIdentifierRejected,
+	CodeDirectoryHashRejected
+};
 
 enum class ApplyResult : uint8_t {
+	DryRunMatch,
 	Patched,
 	AlreadyPatched,
-	Rejected,
+	SignatureRejected,
+	RangeRejected,
+	ConcurrentChangeRejected,
 	WriteProtectionFailure,
 	RestoreProtectionFailure,
 	VerificationFailure
@@ -55,7 +71,7 @@ template <typename T>
 bool solveRequiredSymbol(KernelPatcher &patcher, const char *name, T &function) {
 	auto address = patcher.solveSymbol(KernelPatcher::KernelID, name);
 	if (address == 0 || patcher.getError() != KernelPatcher::Error::NoError) {
-		SYSLOG(MODULE_SHORT, "required symbol %s is unavailable", name);
+		SYSLOG(MODULE_SHORT, "lifecycle=route-rejected reason=missing-symbol symbol=%s", name);
 		patcher.clearError();
 		function = nullptr;
 		return false;
@@ -74,23 +90,70 @@ bool hasExactCString(const char *value, const char *expected, size_t expectedSiz
 	return value[expectedSize] == '\0';
 }
 
-bool isApprovedImage(vnode_t vp, memory_object_offset_t pageOffset) {
-	if (vp == nullptr || vnode_vtype(vp) != VREG ||
-		csVnodeGetBlob == nullptr || csBlobGetIdentity == nullptr ||
-		csBlobGetTeamId == nullptr || csBlobGetCdHash == nullptr ||
-		csBlobGetFlags == nullptr)
+bool getDiscordCandidatePath(vnode_t vp, char *path, size_t &pathLength) {
+	pathLength = 0;
+	if (vp == nullptr || path == nullptr || vnode_vtype(vp) != VREG)
 		return false;
 
-	char path[PATH_MAX] {};
-	int pathLength = PATH_MAX;
-	if (vn_getpath(vp, path, &pathLength) != 0 ||
-		pathLength <= 1 || pathLength > PATH_MAX || path[pathLength - 1] != '\0' ||
-		!IMKLFX::matchDiscordStableKrispPath(path, static_cast<size_t>(pathLength - 1)))
+	int returnedLength = PATH_MAX;
+	if (vn_getpath(vp, path, &returnedLength) != 0 ||
+		returnedLength <= 1 || returnedLength > PATH_MAX || path[returnedLength - 1] != '\0')
 		return false;
+
+	pathLength = static_cast<size_t>(returnedLength - 1);
+	return IMKLFX::matchDiscordStableKrispPath(path, pathLength);
+}
+
+void logRedactedCandidatePath(const char *path, size_t pathLength) {
+	if (!verboseLogging || path == nullptr || pathLength == 0)
+		return;
+
+	static constexpr char UserPrefix[] = "/Users/";
+	if (pathLength <= sizeof(UserPrefix) - 1)
+		return;
+	const char *cursor = path + sizeof(UserPrefix) - 1;
+	const char *end = path + pathLength;
+	while (cursor < end && *cursor != '/')
+		cursor++;
+	if (cursor < end)
+		SYSLOG(MODULE_SHORT, "verbose candidate=discord-stable-krisp path=~%s", cursor);
+}
+
+const char *imageResultReason(ImageResult result) {
+	switch (result) {
+		case ImageResult::CodeBlobUnavailable:
+			return "code-blob-unavailable";
+		case ImageResult::SigningFlagsRejected:
+			return "signing-flags";
+		case ImageResult::SigningIdentifierRejected:
+			return "signing-identifier";
+		case ImageResult::TeamIdentifierRejected:
+			return "team-identifier";
+		case ImageResult::CodeDirectoryHashRejected:
+			return "cdhash";
+		case ImageResult::NotCandidate:
+			return "not-candidate";
+		case ImageResult::Approved:
+			return "approved";
+	}
+	return "unknown";
+}
+
+ImageResult inspectImage(vnode_t vp, memory_object_offset_t pageOffset) {
+	if (csVnodeGetBlob == nullptr || csBlobGetIdentity == nullptr ||
+		csBlobGetTeamId == nullptr || csBlobGetCdHash == nullptr ||
+		csBlobGetFlags == nullptr)
+		return ImageResult::NotCandidate;
+
+	char path[PATH_MAX] {};
+	size_t pathLength {};
+	if (!getDiscordCandidatePath(vp, path, pathLength))
+		return ImageResult::NotCandidate;
+	logRedactedCandidatePath(path, pathLength);
 
 	auto blob = csVnodeGetBlob(vp, static_cast<off_t>(pageOffset));
 	if (blob == nullptr)
-		return false;
+		return ImageResult::CodeBlobUnavailable;
 
 	const auto &variant = IMKLFX::DiscordStable00403KrispX8664;
 	static constexpr unsigned int RequiredCodeSigningFlags = CS_VALID | CS_RUNTIME;
@@ -98,7 +161,7 @@ bool isApprovedImage(vnode_t vp, memory_object_offset_t pageOffset) {
 	const unsigned int flags = csBlobGetFlags(blob);
 	if ((flags & RequiredCodeSigningFlags) != RequiredCodeSigningFlags ||
 		(flags & ForbiddenCodeSigningFlags) != 0)
-		return false;
+		return ImageResult::SigningFlagsRejected;
 
 	const char *identity = csBlobGetIdentity(blob);
 	const char *team = csBlobGetTeamId(blob);
@@ -107,25 +170,39 @@ bool isApprovedImage(vnode_t vp, memory_object_offset_t pageOffset) {
 	static constexpr size_t SigningIdentifierSize = sizeof("discord_krisp") - 1;
 	static constexpr size_t TeamIdentifierSize = sizeof("53Q6R32WPB") - 1;
 
-	return hasExactCString(identity, variant.signingIdentifier, SigningIdentifierSize) &&
-		hasExactCString(team, variant.teamIdentifier, TeamIdentifierSize) &&
-		cdhash != nullptr &&
-		IMKLFX::bytesEqual(cdhash, variant.codeDirectoryHash, variant.codeDirectoryHashSize);
+	if (!hasExactCString(identity, variant.signingIdentifier, SigningIdentifierSize))
+		return ImageResult::SigningIdentifierRejected;
+	if (!hasExactCString(team, variant.teamIdentifier, TeamIdentifierSize))
+		return ImageResult::TeamIdentifierRejected;
+	if (cdhash == nullptr ||
+		!IMKLFX::bytesEqual(cdhash, variant.codeDirectoryHash, variant.codeDirectoryHashSize))
+		return ImageResult::CodeDirectoryHashRejected;
+
+	SYSLOG_COND(verboseLogging, MODULE_SHORT,
+		"verbose candidate=%s image=%s signing-id=%s team-id=%s patch=%s identity=approved",
+		variant.applicationIdentifier, variant.identifier, variant.signingIdentifier,
+		variant.teamIdentifier, variant.patch->identifier);
+	return ImageResult::Approved;
 }
 
-ApplyResult applyApprovedPatch(const void *data, size_t size, memory_object_offset_t pageOffset) {
+ApplyResult applyApprovedPatch(const void *data, size_t size, memory_object_offset_t pageOffset,
+	bool dryRun) {
 	const auto &variant = IMKLFX::DiscordStable00403KrispX8664;
 	const auto *bytes = static_cast<const uint8_t *>(data);
 	auto state = IMKLFX::classifyTarget(bytes, size, pageOffset, variant);
 	if (state == IMKLFX::TargetState::AlreadyPatched)
 		return ApplyResult::AlreadyPatched;
+	if (state == IMKLFX::TargetState::NotCovered)
+		return ApplyResult::RangeRejected;
 	if (state != IMKLFX::TargetState::Original)
-		return ApplyResult::Rejected;
+		return ApplyResult::SignatureRejected;
+	if (dryRun)
+		return ApplyResult::DryRunMatch;
 	if (KernelPatcher::kernelWriteLock == nullptr ||
 		MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
 		return ApplyResult::WriteProtectionFailure;
 
-	ApplyResult result = ApplyResult::Rejected;
+	ApplyResult result = ApplyResult::ConcurrentChangeRejected;
 	state = IMKLFX::classifyTarget(bytes, size, pageOffset, variant);
 	if (state == IMKLFX::TargetState::AlreadyPatched) {
 		result = ApplyResult::AlreadyPatched;
@@ -163,31 +240,69 @@ void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset, const v
 	// The target is in the first 4 KiB validation subrange on x86_64.
 	static constexpr int TargetValidationBit = 1;
 	if ((*validated & TargetValidationBit) == 0 ||
-		(*tainted & TargetValidationBit) != 0 || (*nx & TargetValidationBit) != 0)
+		(*tainted & TargetValidationBit) != 0 || (*nx & TargetValidationBit) != 0) {
+		if (verboseLogging) {
+			char path[PATH_MAX] {};
+			size_t pathLength {};
+			if (getDiscordCandidatePath(vp, path, pathLength)) {
+				logRedactedCandidatePath(path, pathLength);
+				SYSLOG(MODULE_SHORT,
+					"candidate=%s outcome=rejected reason=xnu-page-validation validated=0x%x tainted=0x%x nx=0x%x",
+					variant.applicationIdentifier, *validated, *tainted, *nx);
+			}
+		}
 		return;
-	if (!isApprovedImage(vp, pageOffset))
-		return;
+	}
 
-	const auto result = applyApprovedPatch(data, PAGE_SIZE, pageOffset);
+	const auto imageResult = inspectImage(vp, pageOffset);
+	if (imageResult == ImageResult::NotCandidate)
+		return;
+	if (imageResult != ImageResult::Approved) {
+		SYSLOG(MODULE_SHORT, "candidate=%s outcome=rejected reason=%s",
+			variant.applicationIdentifier, imageResultReason(imageResult));
+		return;
+	}
+
+	const auto result = applyApprovedPatch(data, PAGE_SIZE, pageOffset, dryRunMode);
 	switch (result) {
+		case ApplyResult::DryRunMatch:
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s signature=supported outcome=dry-run modified=no",
+				variant.identifier, variant.patch->identifier);
+			break;
 		case ApplyResult::Patched:
-			SYSLOG(MODULE_SHORT, "patched image %s with definition %s",
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s signature=supported outcome=patched modified=yes",
+				variant.identifier, variant.patch->identifier);
+			break;
+		case ApplyResult::AlreadyPatched:
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=skipped reason=already-patched",
+				variant.identifier, variant.patch->identifier);
+			break;
+		case ApplyResult::SignatureRejected:
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s outcome=rejected reason=signature-or-context",
+				variant.identifier, variant.patch->identifier);
+			break;
+		case ApplyResult::RangeRejected:
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=callback-range",
+				variant.identifier, variant.patch->identifier);
+			break;
+		case ApplyResult::ConcurrentChangeRejected:
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=concurrent-change",
 				variant.identifier, variant.patch->identifier);
 			break;
 		case ApplyResult::WriteProtectionFailure:
-			SYSLOG(MODULE_SHORT, "write protection change failed for definition %s",
+			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-change",
 				variant.patch->identifier);
 			break;
 		case ApplyResult::RestoreProtectionFailure:
-			SYSLOG(MODULE_SHORT, "write protection restore failed for definition %s",
+			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-restore",
 				variant.patch->identifier);
 			break;
 		case ApplyResult::VerificationFailure:
-			SYSLOG(MODULE_SHORT, "replacement verification failed for definition %s",
+			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=replacement-verification",
 				variant.patch->identifier);
-			break;
-		case ApplyResult::AlreadyPatched:
-		case ApplyResult::Rejected:
 			break;
 	}
 }
@@ -202,11 +317,11 @@ void wrapCsValidatePage(vnode_t vp, memory_object_t pager,
 
 bool prepareAndRoute(KernelPatcher &patcher) {
 	if (getKernelVersion() != KernelVersion::Sequoia) {
-		SYSLOG(MODULE_SHORT, "unsupported Darwin version; route not installed");
+		SYSLOG(MODULE_SHORT, "lifecycle=route-rejected reason=unsupported-darwin");
 		return false;
 	}
 	if (BaseDeviceInfo::get().cpuVendor != CPUInfo::CpuVendor::AMD) {
-		SYSLOG(MODULE_SHORT, "non-AMD CPU; route not installed");
+		SYSLOG(MODULE_SHORT, "lifecycle=route-rejected reason=non-amd-cpu");
 		return false;
 	}
 
@@ -221,11 +336,11 @@ bool prepareAndRoute(KernelPatcher &patcher) {
 		"_cs_validate_page", wrapCsValidatePage, orgCsValidatePage
 	};
 	if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &route, 1)) {
-		SYSLOG(MODULE_SHORT, "failed to route _cs_validate_page");
+		SYSLOG(MODULE_SHORT, "lifecycle=route-rejected reason=cs-validate-page-routing");
 		return false;
 	}
 
-	DBGLOG(MODULE_SHORT, "Darwin 24 AMD validation route installed");
+	SYSLOG(MODULE_SHORT, "lifecycle=route-installed darwin=24 cpu=amd");
 	return true;
 }
 
@@ -252,12 +367,20 @@ PluginConfiguration ADDPR(config) {
 	KernelVersion::Sequoia,
 	KernelVersion::Sequoia,
 	[]() {
-		DBGLOG(MODULE_SHORT, "Intel Math Kernel Library fixup plugin loaded");
+		verboseLogging = checkKernelArgument("-imklfxdbg");
+		dryRunMode = checkKernelArgument("-imklfxdryrun");
+		builtInOnlyRequested = checkKernelArgument("-imklfxbuiltin");
+		SYSLOG(MODULE_SHORT,
+			"lifecycle=loaded mode=%s whitelist=builtin-only explicit-builtin=%d verbose=%d",
+			dryRunMode ? "dry-run" : "patch", builtInOnlyRequested, verboseLogging);
 		auto error = lilu.onPatcherLoad([](void *, KernelPatcher &patcher) {
-			if ((lilu.getRunMode() & LiluAPI::RunningNormal) != 0)
+			if ((lilu.getRunMode() & LiluAPI::RunningNormal) != 0) {
 				prepareAndRoute(patcher);
+			} else {
+				SYSLOG(MODULE_SHORT, "lifecycle=route-rejected reason=run-mode");
+			}
 		});
 		if (error != LiluAPI::Error::NoError)
-			SYSLOG(MODULE_SHORT, "failed to register patcher callback: %d", error);
+			SYSLOG(MODULE_SHORT, "lifecycle=registration-failed error=%d", static_cast<int>(error));
 	}
 };
