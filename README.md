@@ -4,6 +4,11 @@ Me (Kaitlyn), or Carnations Botanica is not responsible for any data loss incurr
 ## IntelMKLFixup
 Dead-simple Intel(tm) MKL (Math Kernel Library) patcher for macOS, with a twist.
 
+The patch engine is application-independent: reviewed MKL vendor-gate
+implementations are eligible only when a separate built-in application and
+image-variant policy approves the native module. Discord Stable/Krisp is the
+first controlled-test fixture, not the product boundary.
+
 ## Why?
 Hackintoshes with AMD CPUs have infamously had a problem with software compiled against Intel's MKL, often resulting in many popular applications just not running correctly or at all.
 
@@ -22,7 +27,8 @@ before attempting any controlled test.
 
 Whitelist release assets are handled only by the signed userspace mechanism
 described in [whitelist updates](docs/WHITELIST_UPDATES.md). The kernel extension
-does not contact GitHub or parse an external manifest.
+does not contact GitHub or parse an external manifest. Installing a userspace
+manifest does not change runtime behaviour in the current release.
 
 ## Credits & Thanks
 - [vit9696](https://github.com/vit9696) (and contributors) for [RestrictEvents](https://github.com/acidanthera/RestrictEvents), which served as the basis for this project.

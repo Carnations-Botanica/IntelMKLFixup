@@ -15,16 +15,17 @@ The Phase 5 boundary is therefore:
 3. the tool authenticates the exact manifest bytes, then validates a strict
    schema, compatibility range, expiry, and monotonic version;
 4. an accepted manifest is retained in a user-owned, versioned store for review
-   and future source builds; and
-5. a reviewed kext release compiles eligible identity records into typed C++
-   data. The running kext never parses the manifest.
+   and future policy transport; and
+5. the current reviewed kext release compiles eligible identity records into
+   typed C++ data. The running kext never parses the manifest.
 
 Installing a userspace manifest does **not** change the active kext and does not
 make an application eligible at runtime. That limitation is intentional. A
-future build-time generator may consume authenticated identity fields, but it
-must map only to path rules, target profiles, and patch definitions already
-compiled into reviewed source. It must not generate machine code or offsets
-from remotely supplied values.
+current identity change must be reviewed into both a new manifest and a new
+kext release. The desired later transport may consume authenticated
+application/image records, but it must map only to path grammars, signing
+profiles, and patch definitions already compiled into reviewed source. It must
+never generate machine-code signatures or replacements from remote values.
 
 There is no kernel networking, GitHub API client, JSON parser, manifest file
 reader, or arbitrary NVRAM policy blob.
@@ -36,30 +37,41 @@ The formal schemas are:
 - [`whitelist/manifest.schema.json`](../whitelist/manifest.schema.json)
 - [`whitelist/signature.schema.json`](../whitelist/signature.schema.json)
 
-The shipped example is [`whitelist/manifest.json`](../whitelist/manifest.json).
-The Swift validator implements the schema plus additional semantic constraints
-such as the 370-day maximum lifetime, duplicate identity rejection, exact
-plugin compatibility, and compiled-identifier membership.
+The shipped schema-version-2 example is
+[`whitelist/manifest.json`](../whitelist/manifest.json). The Swift validator
+implements the schema plus additional semantic constraints such as the 370-day
+maximum lifetime, referential integrity, unused-rule rejection, duplicate
+identity rejection, exact plugin compatibility, executable-range bounds, match
+mode/offset consistency, and compiled-identifier membership.
 
-Each rule may contain only:
+The manifest has two identity layers:
 
-- a stable rule ID;
-- the application family and observed application version;
-- `x86_64` architecture;
-- a precompiled path-rule ID;
-- a precompiled target-profile ID;
-- a precompiled patch-definition ID;
-- exact signing identifier;
-- exact Team ID or an explicit `null` absent-Team policy; and
-- exact lowercase 20-byte CDHash.
+- `application_rules` contain a stable family/rule ID, display name, exact
+  basename, precompiled path-rule ID, exact signing identifier, explicit Team
+  ID policy/value, and a precompiled signing-policy ID; and
+- `image_variants` contain an application-rule reference, observed version,
+  architecture, exact CDHash, explicit match mode, reviewed executable range,
+  strict target offset where required, and a bounded list of allowed compiled
+  patch-definition IDs.
+
+Patch definitions are not manifest objects. Their machine-code bytes, context,
+replacement, architecture, and MKL-generation evidence remain compiled into
+reviewed source releases.
 
 The schema has no fields for search bytes, replacement bytes, masks, machine
-code, file offsets, arbitrary paths, scripts, URLs, or executable content.
-Unknown fields are rejected even when the file has a valid signature.
+code, arbitrary path expressions, scripts, URLs, or executable content. A
+strict variant may carry only its reviewed file offset and executable bounds;
+those values cannot authorise a write unless an exact compiled MKL definition
+and all application/image evidence also match. Unknown fields are rejected
+even when the file has a valid signature.
 
 Manifest versions are positive, monotonically increasing integers. Reusing a
 version with different authenticated bytes is rejected. A valid manifest also
 contains generation and expiry times and an inclusive plugin-version range.
+
+`reviewed_search` is represented by the schema so the policy mode cannot be
+ambiguous, but the current semantic validator rejects it because the matching
+engine is compiled disabled. Only `strict_variant` is accepted.
 
 ## Signature format and trust root
 
@@ -199,8 +211,28 @@ manifest:
 
 Every check and update prints the authenticated release tag or `offline`, key
 ID, manifest SHA-256, version transition, sorted added, removed, and changed
-rule IDs, and the complete identity record on each side of every change.
+application/image record IDs, and the complete identity record on each side of
+every change.
 Downloaded scripts and binaries are never executed.
+
+## Runtime policy transport status
+
+The updater's store is not a runtime policy source in the current release. The
+kext neither watches it nor opens it at boot or during validation. `status`,
+`check`, `update`, and `rollback` operate only on authenticated userspace state.
+
+For the initial implementation, application rules remain compiled into the
+kext. This is the selected safe deployment model until a separate review proves
+a boot transport. The preferred future shape is a compact, fixed-capacity
+binary policy derived from the signed manifest, authenticated and parsed once
+before callback registration, then frozen for the boot. The exact OpenCore
+carrier and kernel retrieval API have not been verified and are therefore not
+implemented. There is no claim that an OpenCore property or userspace handoff
+works today.
+
+Runtime JSON/file parsing and a post-boot mutable policy are not fallback
+mechanisms. Failure of any future boot-policy step must select the built-in
+catalogue or disable external policy; it must never broaden eligibility.
 
 ## Atomic storage and rollback
 
@@ -231,8 +263,8 @@ state design.
 For every identity update:
 
 1. obtain the original application image from known provenance;
-2. review its code signature, CDHash, MKL signature/context, target profile, and
-   application path rule;
+2. review its code signature, CDHash, MKL signature/context, executable range,
+   strict target offset, and application path rule;
 3. update the manifest with a new version and bounded lifetime;
 4. run `swift test` and the validator;
 5. review the exact added, removed, and changed IDs;
