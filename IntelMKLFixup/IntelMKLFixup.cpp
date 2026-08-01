@@ -44,6 +44,7 @@ static CsBlobGetFlags csBlobGetFlags {nullptr};
 static bool verboseLogging {false};
 static bool dryRunMode {false};
 static bool builtInOnlyRequested {false};
+static bool boundedWindowMode {false};
 
 enum class ApplyResult : uint8_t {
 	DryRunMatch,
@@ -53,6 +54,7 @@ enum class ApplyResult : uint8_t {
 	RangeRejected,
 	ModeRejected,
 	AmbiguousPatch,
+	PolicyRejected,
 	ConcurrentChangeRejected,
 	WriteProtectionFailure,
 	RestoreProtectionFailure,
@@ -62,6 +64,7 @@ enum class ApplyResult : uint8_t {
 struct ApplyOutcome {
 	ApplyResult result;
 	const IMKLFX::PatchDefinition *patch;
+	uint64_t targetFileOffset;
 };
 
 template <typename T>
@@ -127,7 +130,9 @@ void logCandidatePath(const IMKLFX::ApplicationRule &application,
 const char *variantResultReason(IMKLFX::VariantMatchState result) {
 	switch (result) {
 		case IMKLFX::VariantMatchState::ModeDisabled:
-			return "policy-mode-disabled";
+			return "search-mode-disabled";
+		case IMKLFX::VariantMatchState::InvalidPolicy:
+			return "invalid-policy";
 		case IMKLFX::VariantMatchState::SigningPolicyRejected:
 			return "signing-policy";
 		case IMKLFX::VariantMatchState::SigningIdentifierRejected:
@@ -148,82 +153,123 @@ const char *variantResultReason(IMKLFX::VariantMatchState result) {
 
 ApplyOutcome applyApprovedPatch(const void *data, size_t size,
 	memory_object_offset_t pageOffset, const IMKLFX::ImageVariant &variant,
-	bool dryRun) {
+	const IMKLFX::RuntimePolicyControls &controls, bool dryRun) {
 	const auto *bytes = static_cast<const uint8_t *>(data);
-	auto selection = IMKLFX::selectStrictPatch(bytes, size, pageOffset, variant);
+	auto selection = IMKLFX::selectPolicyPatch(bytes, size, pageOffset, variant, controls);
 	if (selection.state == IMKLFX::TargetState::AlreadyPatched)
-		return {ApplyResult::AlreadyPatched, selection.patch};
+		return {ApplyResult::AlreadyPatched, selection.patch, selection.targetFileOffset};
 	if (selection.state == IMKLFX::TargetState::NotCovered)
-		return {ApplyResult::RangeRejected, nullptr};
+		return {ApplyResult::RangeRejected, nullptr, 0};
 	if (selection.state == IMKLFX::TargetState::ModeDisabled)
-		return {ApplyResult::ModeRejected, nullptr};
+		return {ApplyResult::ModeRejected, nullptr, 0};
 	if (selection.state == IMKLFX::TargetState::Ambiguous)
-		return {ApplyResult::AmbiguousPatch, nullptr};
+		return {ApplyResult::AmbiguousPatch, nullptr, 0};
+	if (selection.state == IMKLFX::TargetState::InvalidPolicy)
+		return {ApplyResult::PolicyRejected, nullptr, 0};
 	if (selection.state != IMKLFX::TargetState::Original || selection.patch == nullptr)
-		return {ApplyResult::SignatureRejected, nullptr};
+		return {ApplyResult::SignatureRejected, nullptr, 0};
 	if (dryRun)
-		return {ApplyResult::DryRunMatch, selection.patch};
+		return {ApplyResult::DryRunMatch, selection.patch, selection.targetFileOffset};
 	if (KernelPatcher::kernelWriteLock == nullptr ||
 		MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return {ApplyResult::WriteProtectionFailure, selection.patch};
+		return {ApplyResult::WriteProtectionFailure, selection.patch,
+			selection.targetFileOffset};
 
 	ApplyResult result = ApplyResult::ConcurrentChangeRejected;
 	const auto *matchedPatch = selection.patch;
-	selection = IMKLFX::selectStrictPatch(bytes, size, pageOffset, variant);
+	const uint64_t matchedOffset = selection.targetFileOffset;
+	selection = IMKLFX::selectPolicyPatch(bytes, size, pageOffset, variant, controls);
 	if (selection.state == IMKLFX::TargetState::AlreadyPatched &&
-		selection.patch == matchedPatch) {
+		selection.patch == matchedPatch && selection.targetFileOffset == matchedOffset) {
 		result = ApplyResult::AlreadyPatched;
 	} else if (selection.state == IMKLFX::TargetState::Original &&
-		selection.patch == matchedPatch) {
+		selection.patch == matchedPatch && selection.targetFileOffset == matchedOffset) {
 		auto target = IMKLFX::targetPointer(const_cast<uint8_t *>(bytes), size,
-			pageOffset, variant, *matchedPatch);
+			pageOffset, matchedOffset, *matchedPatch);
 		if (target != nullptr) {
 			lilu_os_memcpy(target, matchedPatch->replacement, matchedPatch->replacementSize);
-			result = IMKLFX::classifyTarget(bytes, size, pageOffset, variant,
-				*matchedPatch) == IMKLFX::TargetState::AlreadyPatched ?
+			result = IMKLFX::classifyCandidateAt(bytes, size, pageOffset,
+				matchedOffset, variant, *matchedPatch) == IMKLFX::TargetState::AlreadyPatched ?
 				ApplyResult::Patched : ApplyResult::VerificationFailure;
 		}
 	}
 
 	if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return {ApplyResult::RestoreProtectionFailure, matchedPatch};
-	return {result, matchedPatch};
+		return {ApplyResult::RestoreProtectionFailure, matchedPatch, matchedOffset};
+	return {result, matchedPatch, matchedOffset};
 }
 
 void logApplyOutcome(const IMKLFX::ImageVariant &variant,
 	const ApplyOutcome &outcome) {
 	const char *patchIdentifier = outcome.patch != nullptr ?
 		outcome.patch->identifier : "none";
+	const bool bounded = variant.matchMode == IMKLFX::MatchMode::BoundedWindow;
 	switch (outcome.result) {
 		case ApplyResult::DryRunMatch:
-			SYSLOG(MODULE_SHORT,
-				"image=%s patch=%s signature=supported outcome=dry-run modified=no",
-				variant.identifier, patchIdentifier);
+			if (bounded) {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s search=unique-supported-signature outcome=dry-run-match modified=no offset=0x%llx",
+					variant.identifier, patchIdentifier,
+					static_cast<unsigned long long>(outcome.targetFileOffset));
+			} else {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s signature=supported outcome=dry-run modified=no offset=0x%llx",
+					variant.identifier, patchIdentifier,
+					static_cast<unsigned long long>(outcome.targetFileOffset));
+			}
 			break;
 		case ApplyResult::Patched:
-			SYSLOG(MODULE_SHORT,
-				"image=%s patch=%s signature=supported outcome=patched modified=yes",
-				variant.identifier, patchIdentifier);
+			if (bounded) {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s search=unique-supported-signature outcome=patched modified=yes offset=0x%llx",
+					variant.identifier, patchIdentifier,
+					static_cast<unsigned long long>(outcome.targetFileOffset));
+			} else {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s signature=supported outcome=patched modified=yes offset=0x%llx",
+					variant.identifier, patchIdentifier,
+					static_cast<unsigned long long>(outcome.targetFileOffset));
+			}
 			break;
 		case ApplyResult::AlreadyPatched:
-			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=skipped reason=already-patched",
-				variant.identifier, patchIdentifier);
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s outcome=already-patched offset=0x%llx",
+				variant.identifier, patchIdentifier,
+				static_cast<unsigned long long>(outcome.targetFileOffset));
 			break;
 		case ApplyResult::SignatureRejected:
-			SYSLOG(MODULE_SHORT,
-				"image=%s patch=%s outcome=rejected reason=signature-or-context",
-				variant.identifier, patchIdentifier);
+			if (bounded) {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s outcome=no-supported-signature",
+					variant.identifier, patchIdentifier);
+			} else {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s outcome=rejected reason=signature-or-context",
+					variant.identifier, patchIdentifier);
+			}
 			break;
 		case ApplyResult::RangeRejected:
 			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=callback-range",
 				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::ModeRejected:
-			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=policy-mode-disabled",
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=search-mode-disabled",
 				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::AmbiguousPatch:
-			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=ambiguous-patch",
+			if (bounded) {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s outcome=ambiguous-signatures",
+					variant.identifier, patchIdentifier);
+			} else {
+				SYSLOG(MODULE_SHORT,
+					"image=%s patch=%s outcome=rejected reason=ambiguous-patch",
+					variant.identifier, patchIdentifier);
+			}
+			break;
+		case ApplyResult::PolicyRejected:
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s outcome=policy-rejected",
 				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::ConcurrentChangeRejected:
@@ -248,7 +294,7 @@ void logApplyOutcome(const IMKLFX::ImageVariant &variant,
 void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset,
 	const void *data, int *validated, int *tainted, int *nx) {
 	static constexpr int TargetValidationBit = 1;
-	static_assert(PAGE_SIZE == 4096,
+	static_assert(PAGE_SIZE == IMKLFX::X8664ValidationPageSize,
 		"the x86_64 validation-bit policy requires 4 KiB pages");
 
 	if (vp == nullptr || data == nullptr || validated == nullptr ||
@@ -296,9 +342,10 @@ void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset,
 		(flags & CS_RUNTIME) != 0,
 		(flags & CS_ADHOC) != 0
 	};
+	const IMKLFX::RuntimePolicyControls controls {boundedWindowMode};
 	const auto selection = IMKLFX::selectImageVariant(IMKLFX::BuiltInImageVariants,
 		IMKLFX::BuiltInImageVariantCount, path, pathLength, pageOffset, PAGE_SIZE,
-		identity);
+		identity, controls);
 	if (selection.state != IMKLFX::VariantMatchState::Approved ||
 		selection.variant == nullptr) {
 		if (selection.state != IMKLFX::VariantMatchState::NotCandidate) {
@@ -309,13 +356,25 @@ void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset,
 	}
 
 	const auto &variant = *selection.variant;
+	SYSLOG(MODULE_SHORT,
+		"candidate-app-approved application=%s image=%s mode=%s",
+		variant.application->identifier, variant.identifier,
+		variant.matchMode == IMKLFX::MatchMode::StrictVariant ? "strict-variant" :
+			"bounded-window");
+	if (variant.matchMode == IMKLFX::MatchMode::BoundedWindow) {
+		SYSLOG(MODULE_SHORT,
+			"image=%s outcome=search-started scope=bounded-window start=0x%llx end=0x%llx",
+			variant.identifier,
+			static_cast<unsigned long long>(variant.searchWindowStart),
+			static_cast<unsigned long long>(variant.searchWindowEnd));
+	}
 	SYSLOG_COND(verboseLogging, MODULE_SHORT,
 		"verbose candidate=%s image=%s signing-id=%s patch-policy-count=%lu identity=approved",
 		variant.application->identifier, variant.identifier,
 		variant.application->signingIdentifier,
 		static_cast<unsigned long>(variant.allowedPatchCount));
 	logApplyOutcome(variant, applyApprovedPatch(data, PAGE_SIZE, pageOffset,
-		variant, dryRunMode));
+		variant, controls, dryRunMode));
 }
 
 void wrapCsValidatePage(vnode_t vp, memory_object_t pager,
@@ -352,9 +411,10 @@ bool prepareAndRoute(KernelPatcher &patcher) {
 	}
 
 	SYSLOG(MODULE_SHORT,
-		"lifecycle=route-installed darwin=24 cpu=amd applications=%lu variants=%lu reviewed-search=disabled",
+		"lifecycle=route-installed darwin=24 cpu=amd applications=%lu variants=%lu bounded-window=%s image-scan=reserved",
 		static_cast<unsigned long>(IMKLFX::BuiltInApplicationRuleCount),
-		static_cast<unsigned long>(IMKLFX::BuiltInImageVariantCount));
+		static_cast<unsigned long>(IMKLFX::BuiltInImageVariantCount),
+		boundedWindowMode ? "enabled" : "disabled");
 	return true;
 }
 
@@ -384,9 +444,11 @@ PluginConfiguration ADDPR(config) {
 		verboseLogging = checkKernelArgument("-imklfxdbg");
 		dryRunMode = checkKernelArgument("-imklfxdryrun");
 		builtInOnlyRequested = checkKernelArgument("-imklfxbuiltin");
+		boundedWindowMode = checkKernelArgument("-imklfxwindow");
 		SYSLOG(MODULE_SHORT,
-			"lifecycle=loaded mode=%s whitelist=builtin-only explicit-builtin=%d verbose=%d reviewed-search=disabled",
-			dryRunMode ? "dry-run" : "patch", builtInOnlyRequested, verboseLogging);
+			"lifecycle=loaded mode=%s whitelist=builtin-only explicit-builtin=%d verbose=%d bounded-window=%d image-scan=reserved",
+			dryRunMode ? "dry-run" : "patch", builtInOnlyRequested,
+			verboseLogging, boundedWindowMode);
 		auto error = lilu.onPatcherLoad([](void *, KernelPatcher &patcher) {
 			if ((lilu.getRunMode() & LiluAPI::RunningNormal) != 0) {
 				prepareAndRoute(patcher);

@@ -13,8 +13,6 @@
 
 namespace IMKLFX {
 
-static constexpr uint64_t InitialX8664ValidationRangeSize {4096};
-
 inline bool consumeLiteral(const char *&cursor, const char *end,
 	const char *literal) {
 	if (cursor == nullptr || end == nullptr || literal == nullptr || cursor > end)
@@ -161,10 +159,34 @@ static constexpr ImageVariant DiscordStable00403KrispX8664 {
 	0x650100,
 	0x4D00,
 	0xCBCED0,
+	0,
+	0,
 	DiscordStable00403KrispAllowedPatches,
 	sizeof(DiscordStable00403KrispAllowedPatches) /
 		sizeof(DiscordStable00403KrispAllowedPatches[0]),
 	"Initial Discord Stable/Krisp controlled-test fixture; functional runtime test pending"
+};
+
+// This policy searches exactly one approved validation window. Version and
+// CDHash are intentionally not identity requirements. Its guarantee is unique
+// matching inside this window only, never across the Mach-O image.
+static constexpr ImageVariant DiscordStableKrispBoundedWindowX8664 {
+	"discord-stable-krisp-bounded-window-0x650000-x86_64-v1",
+	&DiscordStableKrispApplication,
+	nullptr,
+	"x86_64",
+	nullptr,
+	0,
+	MatchMode::BoundedWindow,
+	0,
+	0x4D00,
+	0xCBCED0,
+	0x650000,
+	0x651000,
+	DiscordStable00403KrispAllowedPatches,
+	sizeof(DiscordStable00403KrispAllowedPatches) /
+		sizeof(DiscordStable00403KrispAllowedPatches[0]),
+	"Experimental one-page Discord Stable/Krisp policy; requires -imklfxwindow"
 };
 
 static constexpr const ApplicationRule *BuiltInApplicationRules[] = {
@@ -172,7 +194,8 @@ static constexpr const ApplicationRule *BuiltInApplicationRules[] = {
 };
 
 static constexpr const ImageVariant *BuiltInImageVariants[] = {
-	&DiscordStable00403KrispX8664
+	&DiscordStable00403KrispX8664,
+	&DiscordStableKrispBoundedWindowX8664
 };
 
 static constexpr size_t BuiltInApplicationRuleCount =
@@ -193,15 +216,27 @@ static_assert(DiscordStable00403KrispX8664.targetFileOffset +
 	DiscordStable00403KrispX8664.executableTextEnd,
 	"target must end inside __TEXT,__text");
 static_assert((DiscordStable00403KrispX8664.targetFileOffset &
-	(InitialX8664ValidationRangeSize - 1)) >=
+	(X8664ValidationPageSize - 1)) >=
 	sizeof(MklServIntelCpuTrueOneApiBuild20201104ContextBefore),
 	"strict target before-context must fit in one validation range");
 static_assert((DiscordStable00403KrispX8664.targetFileOffset &
-	(InitialX8664ValidationRangeSize - 1)) +
+	(X8664ValidationPageSize - 1)) +
 	sizeof(MklServIntelCpuTrueOneApiBuild20201104Search) +
 	sizeof(MklServIntelCpuTrueOneApiBuild20201104ContextAfter) <=
-	InitialX8664ValidationRangeSize,
+	X8664ValidationPageSize,
 	"strict target and context must fit in one validation range");
+static_assert((DiscordStableKrispBoundedWindowX8664.searchWindowStart &
+	(X8664ValidationPageSize - 1)) == 0,
+	"bounded window start must be page aligned");
+static_assert(DiscordStableKrispBoundedWindowX8664.searchWindowEnd -
+	DiscordStableKrispBoundedWindowX8664.searchWindowStart ==
+	X8664ValidationPageSize,
+	"initial bounded window must cover exactly one validation page");
+static_assert(DiscordStable00403KrispX8664.targetFileOffset >=
+	DiscordStableKrispBoundedWindowX8664.searchWindowStart &&
+	DiscordStable00403KrispX8664.targetFileOffset <
+	DiscordStableKrispBoundedWindowX8664.searchWindowEnd,
+	"known strict target must be evidence for the initial bounded window");
 
 } // namespace IMKLFX
 
