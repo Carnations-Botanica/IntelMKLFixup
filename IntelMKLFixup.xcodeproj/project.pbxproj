@@ -219,10 +219,11 @@
 			);
 			name = Archive;
 			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(PRODUCT_NAME)-$(MODULE_VERSION)-$(CONFIGURATION).zip",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd \"${TARGET_BUILD_DIR}\"\n\ndist=(\"$FULL_PRODUCT_NAME\")\nif [ -d \"$DWARF_DSYM_FILE_NAME\" ]; then dist+=(\"$DWARF_DSYM_FILE_NAME\"); fi\n\narchive=\"${PRODUCT_NAME}-${MODULE_VERSION}-$(echo $CONFIGURATION | tr /a-z/ /A-Z/).zip\"\nrm -rf *.zip\nzip -qry -FS \"${archive}\" \"${dist[@]}\"\n";
+			shellScript = "cd \"${TARGET_BUILD_DIR}\"\n\narchive=\"${PRODUCT_NAME}-${MODULE_VERSION}-${CONFIGURATION}.zip\"\nrm -f \"${archive}\"\n/usr/bin/zip -qry -FS \"${archive}\" \"${FULL_PRODUCT_NAME}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
