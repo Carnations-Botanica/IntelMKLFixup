@@ -15,15 +15,22 @@ Hackintoshes with AMD CPUs have infamously had a problem with software compiled 
 This is where IntelMKLFixup comes in, IntelMKLFixup will *invisibly* patch bits of Intel's MKL in memory to help provide compatibility for AMD CPUs, without any user interaction or tweaking. Thus, allowing applications that once ran incorrectly or didn't work at all, to now run with little to no issues.
 
 ## Requirements
-- [Lilu](https://github.com/acidanthera/Lilu/releases)
+
+- an x86_64 AMD Hackintosh;
+- macOS 15 / Darwin 24 (the only runtime enabled by this release candidate);
+- [Lilu](https://github.com/acidanthera/Lilu/releases), loaded before
+  IntelMKLFixup; and
+- a known-good recovery EFI that has been boot-tested before installation.
 
 ## Testing controls
 
-The current development source includes fail-closed dry-run and diagnostic
-controls. It is not ready for installation until the remaining build and test
-phases are complete. See [diagnostics and controls](docs/DEBUGGING.md) for boot
-arguments and exact log commands, and [emergency recovery](docs/RECOVERY.md)
-before attempting any controlled test.
+This release candidate has passed clean builds, host tests, sanitizers, static
+analysis, and artifact inspection. It is ready only for the staged manual
+StrictVariant dry run in [TEST_PLAN_3900X.md](TEST_PLAN_3900X.md). It has not
+completed live kernel or functional Krisp testing and is not a general release.
+See [diagnostics and controls](docs/DEBUGGING.md) for boot arguments and exact
+log commands, and [emergency recovery](docs/RECOVERY.md) before attempting the
+controlled test.
 
 Two runtime policy modes are compiled: StrictVariant requires the reviewed
 binary identity and exact file offset; experimental BoundedWindow requires
@@ -31,6 +38,12 @@ binary identity and exact file offset; experimental BoundedWindow requires
 window no larger than one x86_64 page. It proves uniqueness only within that
 window. Future image-wide tolerance requires the separately designed
 userspace-assisted ImageScan architecture; it is not implemented.
+
+The reviewed patch bypasses one exact Intel MKL CPU-vendor gate by replacing
+its supported implementation with `mov eax, 1; ret`. It does not replace
+numerical MKL routines, prove that all MKL operations are correct on AMD, or
+make arbitrary Intel-only software compatible. Unknown applications and MKL
+implementations are left untouched.
 
 Whitelist release assets are handled only by the signed userspace mechanism
 described in [whitelist updates](docs/WHITELIST_UPDATES.md). The kernel extension

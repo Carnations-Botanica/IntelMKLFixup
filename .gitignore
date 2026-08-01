@@ -13,3 +13,4 @@ xcshareddata/
 *.xcarchive/
 /MacKernelSDK
 /.dependencies
+/Release/
