@@ -20,7 +20,9 @@ public enum CompiledWhitelistBindings {
 		"mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
 	]
 
-	public static let reviewedSearchEnabled = false
+	// ImageScan is reserved for a future authenticated userspace pre-scan
+	// transport. BoundedWindow is implemented in the compiled runtime policy.
+	public static let imageScanEnabled = false
 }
 
 public struct ManifestValidator {
@@ -29,6 +31,7 @@ public struct ManifestValidator {
 	public static let maximumImageVariants = 256
 	public static let maximumPatchesPerVariant = 8
 	public static let maximumReviewedFileOffset: UInt64 = UInt64(UInt32.max)
+	public static let x8664ValidationPageSize: UInt64 = 4096
 	public static let maximumLifetime: TimeInterval = 370 * 24 * 60 * 60
 	public static let maximumFutureSkew: TimeInterval = 5 * 60
 
@@ -63,7 +66,7 @@ public struct ManifestValidator {
 			context: "root"
 		)
 
-		let schemaVersion = try requireInteger(root["schema_version"], name: "schema_version", range: 2...2)
+		let schemaVersion = try requireInteger(root["schema_version"], name: "schema_version", range: 3...3)
 		let manifestVersion = try requireInteger(
 			root["manifest_version"], name: "manifest_version", range: 1...Int.max
 		)
@@ -228,7 +231,7 @@ public struct ManifestValidator {
 		}
 		var variants: [ManifestImageVariant] = []
 		var identifiers = Set<String>()
-		var contentIdentities = Set<String>()
+		var policyIdentities = Set<String>()
 		for (index, rawVariant) in rawVariants.enumerated() {
 			guard let variant = rawVariant as? [String: Any] else {
 				throw WhitelistError.invalidManifest("image_variants[\(index)] must be an object")
@@ -237,9 +240,12 @@ public struct ManifestValidator {
 			guard identifiers.insert(parsed.id).inserted else {
 				throw WhitelistError.invalidManifest("duplicate image variant id \(parsed.id)")
 			}
-			let identityKey = "\(parsed.architecture):\(parsed.cdhash)"
-			guard contentIdentities.insert(identityKey).inserted else {
-				throw WhitelistError.invalidManifest("duplicate architecture/CDHash identity")
+			let contentIdentity = parsed.cdhash ?? "none"
+			let windowIdentity = parsed.searchWindow.map { "\($0.start)-\($0.end)" } ?? "none"
+			let identityKey = "\(parsed.applicationRuleID):\(parsed.architecture):" +
+				"\(parsed.matchMode.rawValue):\(contentIdentity):\(windowIdentity)"
+			guard policyIdentities.insert(identityKey).inserted else {
+				throw WhitelistError.invalidManifest("duplicate application/mode/content policy identity")
 			}
 			variants.append(parsed)
 		}
@@ -254,7 +260,7 @@ public struct ManifestValidator {
 			variant,
 			allowed: [
 				"id", "application_rule_id", "application_version", "architecture", "cdhash",
-				"match_mode", "target_file_offset", "executable_range",
+				"match_mode", "target_file_offset", "executable_range", "search_window",
 				"allowed_patch_definition_ids"
 			],
 			context: prefix
@@ -266,26 +272,38 @@ public struct ManifestValidator {
 		guard applicationIDs.contains(applicationRuleID) else {
 			throw WhitelistError.invalidManifest("\(prefix) references an unknown application rule")
 		}
-		let applicationVersion = try requirePatternString(
-			variant["application_version"], name: "\(prefix).application_version",
-			pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$", maximumUTF8Length: 32
-		)
+		let applicationVersion: String?
+		if variant["application_version"] is NSNull {
+			applicationVersion = nil
+		} else {
+			applicationVersion = try requirePatternString(
+				variant["application_version"], name: "\(prefix).application_version",
+				pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$", maximumUTF8Length: 32
+			)
+		}
 		let architecture = try requireMember(
 			variant["architecture"], name: "\(prefix).architecture",
 			allowed: CompiledWhitelistBindings.architectures
 		)
-		let cdhash = try requirePatternString(
-			variant["cdhash"], name: "\(prefix).cdhash",
-			pattern: "^[0-9a-f]{40}$", maximumUTF8Length: 40
-		)
+		let cdhash: String?
+		if variant["cdhash"] is NSNull {
+			cdhash = nil
+		} else {
+			cdhash = try requirePatternString(
+				variant["cdhash"], name: "\(prefix).cdhash",
+				pattern: "^[0-9a-f]{40}$", maximumUTF8Length: 40
+			)
+		}
 		let matchModeString = try requireString(
 			variant["match_mode"], name: "\(prefix).match_mode", maximumUTF8Length: 32
 		)
 		guard let matchMode = ManifestMatchMode(rawValue: matchModeString) else {
 			throw WhitelistError.invalidManifest("\(prefix).match_mode is unsupported")
 		}
-		if matchMode == .reviewedSearch && !CompiledWhitelistBindings.reviewedSearchEnabled {
-			throw WhitelistError.invalidManifest("reviewed_search is compiled disabled")
+		if matchMode == .imageScan && !CompiledWhitelistBindings.imageScanEnabled {
+			throw WhitelistError.invalidManifest(
+				"image_scan is reserved for a future authenticated userspace pre-scan"
+			)
 		}
 
 		let targetFileOffset: UInt64?
@@ -298,9 +316,9 @@ public struct ManifestValidator {
 			)
 		}
 		guard (matchMode == .strictVariant && targetFileOffset != nil) ||
-			(matchMode == .reviewedSearch && targetFileOffset == nil) else {
+			(matchMode != .strictVariant && targetFileOffset == nil) else {
 			throw WhitelistError.invalidManifest(
-				"strict_variant requires an offset; reviewed_search requires null"
+				"strict_variant requires an offset; other modes require null"
 			)
 		}
 
@@ -323,6 +341,39 @@ public struct ManifestValidator {
 			guard targetFileOffset >= rangeStart && targetFileOffset < rangeEnd else {
 				throw WhitelistError.invalidManifest("\(prefix).target_file_offset is outside executable_range")
 			}
+		}
+
+		let searchWindow: ManifestExecutableRange?
+		if variant["search_window"] is NSNull {
+			searchWindow = nil
+		} else {
+			guard let rawWindow = variant["search_window"] as? [String: Any] else {
+				throw WhitelistError.invalidManifest("\(prefix).search_window must be an object or null")
+			}
+			try requireExactKeys(rawWindow, allowed: ["start", "end"], context: "\(prefix).search_window")
+			let windowStart = try requireUInt64(
+				rawWindow["start"], name: "\(prefix).search_window.start",
+				maximum: Self.maximumReviewedFileOffset
+			)
+			let windowEnd = try requireUInt64(
+				rawWindow["end"], name: "\(prefix).search_window.end",
+				maximum: Self.maximumReviewedFileOffset
+			)
+			guard windowStart < windowEnd,
+				windowEnd - windowStart <= Self.x8664ValidationPageSize,
+				windowStart % Self.x8664ValidationPageSize == 0,
+				windowStart >= rangeStart, windowEnd <= rangeEnd else {
+				throw WhitelistError.invalidManifest(
+					"\(prefix).search_window must be page-aligned, non-empty, at most 4096 bytes, and inside executable_range"
+				)
+			}
+			searchWindow = ManifestExecutableRange(start: windowStart, end: windowEnd)
+		}
+		guard (matchMode == .boundedWindow && searchWindow != nil) ||
+			(matchMode != .boundedWindow && searchWindow == nil) else {
+			throw WhitelistError.invalidManifest(
+				"bounded_window requires a search_window; other modes require null"
+			)
 		}
 
 		guard let rawPatchIDs = variant["allowed_patch_definition_ids"] as? [Any],
@@ -354,6 +405,7 @@ public struct ManifestValidator {
 			matchMode: matchMode,
 			targetFileOffset: targetFileOffset,
 			executableRange: ManifestExecutableRange(start: rangeStart, end: rangeEnd),
+			searchWindow: searchWindow,
 			allowedPatchDefinitionIDs: patchIDs
 		)
 	}

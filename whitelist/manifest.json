@@ -29,13 +29,34 @@
       },
       "id": "discord-stable-0.0.403-krisp-x86_64-585e9575",
       "match_mode": "strict_variant",
+      "search_window": null,
       "target_file_offset": 6619392
+    },
+    {
+      "allowed_patch_definition_ids": [
+        "mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
+      ],
+      "application_rule_id": "discord-stable-krisp",
+      "application_version": null,
+      "architecture": "x86_64",
+      "cdhash": null,
+      "executable_range": {
+        "end": 13356752,
+        "start": 19712
+      },
+      "id": "discord-stable-krisp-bounded-window-0x650000-x86_64-v1",
+      "match_mode": "bounded_window",
+      "search_window": {
+        "end": 6623232,
+        "start": 6619136
+      },
+      "target_file_offset": null
     }
   ],
-  "manifest_version": 2,
+  "manifest_version": 3,
   "plugin_compatibility": {
     "maximum": "1.0.0",
     "minimum": "1.0.0"
   },
-  "schema_version": 2
+  "schema_version": 3
 }

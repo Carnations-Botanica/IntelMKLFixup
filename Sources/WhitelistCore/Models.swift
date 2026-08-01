@@ -87,7 +87,8 @@ public enum ManifestTeamIdentifierPolicy: String, Equatable {
 
 public enum ManifestMatchMode: String, Equatable {
 	case strictVariant = "strict_variant"
-	case reviewedSearch = "reviewed_search"
+	case boundedWindow = "bounded_window"
+	case imageScan = "image_scan"
 }
 
 public struct ManifestApplicationRule: Equatable {
@@ -110,12 +111,13 @@ public struct ManifestExecutableRange: Equatable {
 public struct ManifestImageVariant: Equatable {
 	public let id: String
 	public let applicationRuleID: String
-	public let applicationVersion: String
+	public let applicationVersion: String?
 	public let architecture: String
-	public let cdhash: String
+	public let cdhash: String?
 	public let matchMode: ManifestMatchMode
 	public let targetFileOffset: UInt64?
 	public let executableRange: ManifestExecutableRange
+	public let searchWindow: ManifestExecutableRange?
 	public let allowedPatchDefinitionIDs: [String]
 }
 
@@ -190,11 +192,13 @@ public struct ManifestDifference: Equatable {
 		for variant in manifest.imageVariants {
 			let key = "image_variant:\(variant.id)"
 			let offset = variant.targetFileOffset.map(String.init) ?? "null"
+			let window = variant.searchWindow.map { "\($0.start)..<\($0.end)" } ?? "null"
 			records[key] = "\(key) {application_rule=\(variant.applicationRuleID), " +
-				"version=\(variant.applicationVersion), architecture=\(variant.architecture), " +
-				"cdhash=\(variant.cdhash), mode=\(variant.matchMode.rawValue), " +
+				"version=\(variant.applicationVersion ?? "null"), architecture=\(variant.architecture), " +
+				"cdhash=\(variant.cdhash ?? "null"), mode=\(variant.matchMode.rawValue), " +
 				"target_offset=\(offset), executable_range=\(variant.executableRange.start)..<" +
-				"\(variant.executableRange.end), patches=\(variant.allowedPatchDefinitionIDs.joined(separator: ","))}"
+				"\(variant.executableRange.end), search_window=\(window), " +
+				"patches=\(variant.allowedPatchDefinitionIDs.joined(separator: ","))}"
 		}
 		return records
 	}

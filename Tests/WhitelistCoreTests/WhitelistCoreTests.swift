@@ -16,9 +16,13 @@ final class WhitelistCoreTests: XCTestCase {
 		let artifact = try makeArtifact(version: 1)
 		XCTAssertEqual(artifact.manifest.manifestVersion, 1)
 		XCTAssertEqual(artifact.manifest.applicationRules.count, 1)
-		XCTAssertEqual(artifact.manifest.imageVariants.count, 1)
+		XCTAssertEqual(artifact.manifest.imageVariants.count, 2)
 		XCTAssertEqual(artifact.manifest.imageVariants[0].allowedPatchDefinitionIDs,
 			["mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"])
+		XCTAssertEqual(artifact.manifest.imageVariants[1].matchMode, .boundedWindow)
+		XCTAssertNil(artifact.manifest.imageVariants[1].applicationVersion)
+		XCTAssertNil(artifact.manifest.imageVariants[1].cdhash)
+		XCTAssertEqual(artifact.manifest.imageVariants[1].searchWindow?.start, 0x650000)
 	}
 
 	func testProductionTrustRootFailsClosedUntilConfigured() {
@@ -66,18 +70,40 @@ final class WhitelistCoreTests: XCTestCase {
 		XCTAssertThrowsError(try authenticate(data))
 	}
 
-	func testReviewedSearchModeIsRejectedWhileCompiledDisabled() throws {
+	func testImageScanModeIsReservedAndRejected() throws {
 		var object = manifestObject(version: 1)
 		var variants = object["image_variants"] as! [[String: Any]]
-		variants[0]["match_mode"] = "reviewed_search"
+		variants[0]["match_mode"] = "image_scan"
 		variants[0]["target_file_offset"] = NSNull()
 		object["image_variants"] = variants
 		XCTAssertThrowsError(try authenticate(try encode(object))) { error in
 			guard case WhitelistError.invalidManifest(let reason) = error,
-				reason.contains("reviewed_search is compiled disabled") else {
+				reason.contains("image_scan is reserved") else {
 				return XCTFail("unexpected error: \(error)")
 			}
 		}
+	}
+
+	func testBoundedWindowMustBePageAlignedAndBounded() throws {
+		var object = manifestObject(version: 1)
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[1]["search_window"] = ["start": 0x650001, "end": 0x651001]
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object)))
+
+		object = manifestObject(version: 1)
+		variants = object["image_variants"] as! [[String: Any]]
+		variants[1]["search_window"] = ["start": 0x650000, "end": 0x652000]
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object)))
+	}
+
+	func testBoundedWindowRequiresNoFixedOffset() throws {
+		var object = manifestObject(version: 1)
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[1]["target_file_offset"] = 0x650100
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object)))
 	}
 
 	func testImageVariantMustReferenceAnApplicationRule() throws {
@@ -230,7 +256,7 @@ final class WhitelistCoreTests: XCTestCase {
 
 	private func manifestObject(version: Int, applicationVersion: String = "0.0.403") -> [String: Any] {
 		[
-			"schema_version": 2,
+			"schema_version": 3,
 			"manifest_version": version,
 			"generated_at": "2026-07-30T00:00:00Z",
 			"expires_at": "2027-07-30T00:00:00Z",
@@ -258,6 +284,20 @@ final class WhitelistCoreTests: XCTestCase {
 				"match_mode": "strict_variant",
 				"target_file_offset": 0x650100,
 				"executable_range": ["start": 0x4D00, "end": 0xCBCED0],
+				"search_window": NSNull(),
+				"allowed_patch_definition_ids": [
+					"mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
+				]
+			], [
+				"id": "discord-stable-krisp-bounded-window-test",
+				"application_rule_id": "discord-stable-krisp",
+				"application_version": NSNull(),
+				"architecture": "x86_64",
+				"cdhash": NSNull(),
+				"match_mode": "bounded_window",
+				"target_file_offset": NSNull(),
+				"executable_range": ["start": 0x4D00, "end": 0xCBCED0],
+				"search_window": ["start": 0x650000, "end": 0x651000],
 				"allowed_patch_definition_ids": [
 					"mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
 				]

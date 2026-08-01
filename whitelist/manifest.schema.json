@@ -102,6 +102,9 @@
             },
             "then": {
               "properties": {
+                "search_window": {
+                  "type": "null"
+                },
                 "target_file_offset": {
                   "maximum": 4294967295,
                   "minimum": 0,
@@ -114,12 +117,34 @@
             "if": {
               "properties": {
                 "match_mode": {
-                  "const": "reviewed_search"
+                  "const": "bounded_window"
                 }
               }
             },
             "then": {
               "properties": {
+                "search_window": {
+                  "type": "object"
+                },
+                "target_file_offset": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_mode": {
+                  "const": "image_scan"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "search_window": {
+                  "type": "null"
+                },
                 "target_file_offset": {
                   "type": "null"
                 }
@@ -145,16 +170,30 @@
             "type": "string"
           },
           "application_version": {
-            "maxLength": 32,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$",
-            "type": "string"
+            "oneOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "architecture": {
             "const": "x86_64"
           },
           "cdhash": {
-            "pattern": "^[0-9a-f]{40}$",
-            "type": "string"
+            "oneOf": [
+              {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "executable_range": {
             "additionalProperties": false,
@@ -184,7 +223,35 @@
           "match_mode": {
             "enum": [
               "strict_variant",
-              "reviewed_search"
+              "bounded_window",
+              "image_scan"
+            ]
+          },
+          "search_window": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "end": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "start": {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "target_file_offset": {
@@ -209,6 +276,7 @@
           "match_mode",
           "target_file_offset",
           "executable_range",
+          "search_window",
           "allowed_patch_definition_ids"
         ],
         "type": "object"
@@ -241,7 +309,7 @@
       "type": "object"
     },
     "schema_version": {
-      "const": 2
+      "const": 3
     }
   },
   "required": [
