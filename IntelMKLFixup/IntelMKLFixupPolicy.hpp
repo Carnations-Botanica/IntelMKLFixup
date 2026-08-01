@@ -15,12 +15,64 @@
 namespace IMKLFX {
 
 static constexpr size_t MaximumPathLength {1024};
+static constexpr size_t MaximumCatalogueVariants {128};
+static constexpr size_t MaximumAllowedPatchesPerVariant {8};
+static constexpr bool ReviewedSearchModeEnabled {false};
+
+enum class MatchMode : uint8_t {
+	StrictVariant,
+	ReviewedSearch
+};
+
+enum class TeamIdentifierPolicy : uint8_t {
+	Exact,
+	Absent
+};
+
+enum class CodeSigningPolicy : uint8_t {
+	ValidRuntimeNotAdHoc,
+	ValidAdHoc
+};
+
+enum class PatchValidationPolicy : uint8_t {
+	ExactBytesAndContext
+};
+
+enum class VariantMatchState : uint8_t {
+	NotCandidate,
+	Approved,
+	ModeDisabled,
+	SigningPolicyRejected,
+	SigningIdentifierRejected,
+	TeamIdentifierRejected,
+	CodeDirectoryHashRejected,
+	Ambiguous
+};
 
 enum class TargetState : uint8_t {
 	NotCovered,
 	Original,
 	AlreadyPatched,
-	Mismatch
+	Mismatch,
+	ModeDisabled,
+	Ambiguous
+};
+
+using PathRuleMatcher = bool (*)(const char *, size_t);
+
+struct ApplicationRule {
+	const char *identifier;
+	const char *name;
+	const char *pathRuleIdentifier;
+	const char *basename;
+	size_t basenameSize;
+	PathRuleMatcher pathMatcher;
+	const char *signingIdentifier;
+	size_t signingIdentifierSize;
+	TeamIdentifierPolicy teamIdentifierPolicy;
+	const char *teamIdentifier;
+	size_t teamIdentifierSize;
+	CodeSigningPolicy codeSigningPolicy;
 };
 
 struct PatchDefinition {
@@ -39,93 +91,46 @@ struct PatchDefinition {
 	size_t contextBeforeSize;
 	const uint8_t *contextAfter;
 	size_t contextAfterSize;
+	PatchValidationPolicy validationPolicy;
 	const char *knownMklGeneration;
-	const char *knownApplications;
+	const char *validationRequirements;
 };
 
 struct ImageVariant {
 	const char *identifier;
-	const char *applicationIdentifier;
+	const ApplicationRule *application;
+	const char *applicationVersion;
+	const char *architecture;
+	const uint8_t *codeDirectoryHash;
+	size_t codeDirectoryHashSize;
+	MatchMode matchMode;
+	uint64_t targetFileOffset;
+	uint64_t executableTextStart;
+	uint64_t executableTextEnd;
+	const PatchDefinition *const *allowedPatches;
+	size_t allowedPatchCount;
+	const char *consumerNotes;
+};
+
+struct ImageIdentity {
 	const char *signingIdentifier;
 	const char *teamIdentifier;
 	const uint8_t *codeDirectoryHash;
 	size_t codeDirectoryHashSize;
-	uint64_t targetFileOffset;
-	uint64_t executableTextStart;
-	uint64_t executableTextEnd;
+	bool codeValid;
+	bool runtimeSigned;
+	bool adHocSigned;
+};
+
+struct VariantSelection {
+	VariantMatchState state;
+	const ImageVariant *variant;
+};
+
+struct PatchSelection {
+	TargetState state;
 	const PatchDefinition *patch;
 };
-
-static constexpr uint8_t MklServIntelCpuTrueSearchV1[] = {
-	0x53, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x35, 0x61,
-	0x0F, 0x79, 0x00, 0x85, 0xF6, 0x7C, 0x08, 0x89,
-	0xF0, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3
-};
-
-static constexpr uint8_t MklServIntelCpuTrueReplacementV1[] = {
-	0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3
-};
-
-static constexpr uint8_t MklServIntelCpuTrueContextBeforeV1[] = {
-	0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
-	0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90
-};
-
-static constexpr uint8_t MklServIntelCpuTrueContextAfterV1[] = {
-	0x33, 0xF6, 0x89, 0x74, 0x24, 0x18, 0x89, 0x34,
-	0x24, 0x8B, 0x04, 0x24, 0x8B, 0x4C, 0x24, 0x18
-};
-
-static constexpr PatchDefinition MklServIntelCpuTrueDiscordV1 {
-	"mkl-serv-intel-cpu-true-x86_64-discord-v1",
-	"Intel oneAPI MKL cached CPU-vendor gate",
-	"x86_64",
-	MklServIntelCpuTrueSearchV1,
-	sizeof(MklServIntelCpuTrueSearchV1),
-	nullptr,
-	0,
-	MklServIntelCpuTrueReplacementV1,
-	sizeof(MklServIntelCpuTrueReplacementV1),
-	nullptr,
-	0,
-	MklServIntelCpuTrueContextBeforeV1,
-	sizeof(MklServIntelCpuTrueContextBeforeV1),
-	MklServIntelCpuTrueContextAfterV1,
-	sizeof(MklServIntelCpuTrueContextAfterV1),
-	"Intel oneAPI MKL build 20201104",
-	"Discord Stable 0.0.403 discord_krisp.node (source evidence; runtime untested)"
-};
-
-// This is the embedded x86_64 CodeDirectory hash in the preserved original
-// Discord Stable 0.0.403 module. XNU page validation and CS_VALID are still
-// required: the local backup itself currently fails codesign verification and
-// is not treated as a trusted runnable file.
-static constexpr uint8_t DiscordStable00403KrispCdHash[] = {
-	0x58, 0x5E, 0x95, 0x75, 0xA8, 0x70, 0xDB, 0x3F, 0x7D, 0xE0,
-	0xE9, 0xD3, 0xC7, 0x4F, 0xC9, 0xD7, 0xE7, 0xF0, 0x84, 0xCD
-};
-
-static constexpr ImageVariant DiscordStable00403KrispX8664 {
-	"discord-stable-0.0.403-krisp-x86_64-585e9575",
-	"discord-stable-krisp",
-	"discord_krisp",
-	"53Q6R32WPB",
-	DiscordStable00403KrispCdHash,
-	sizeof(DiscordStable00403KrispCdHash),
-	0x650100,
-	0x4D00,
-	0xCBCED0,
-	&MklServIntelCpuTrueDiscordV1
-};
-
-static_assert(sizeof(MklServIntelCpuTrueReplacementV1) <= sizeof(MklServIntelCpuTrueSearchV1),
-	"replacement must fit in the verified target");
-static_assert(sizeof(DiscordStable00403KrispCdHash) == 20,
-	"CodeDirectory hashes must use XNU's 20-byte CDHash representation");
-static_assert(DiscordStable00403KrispX8664.targetFileOffset >= DiscordStable00403KrispX8664.executableTextStart,
-	"target must start inside __TEXT,__text");
-static_assert(DiscordStable00403KrispX8664.targetFileOffset + sizeof(MklServIntelCpuTrueSearchV1) <= DiscordStable00403KrispX8664.executableTextEnd,
-	"target must end inside __TEXT,__text");
 
 inline bool bytesEqual(const uint8_t *left, const uint8_t *right, size_t size) {
 	if (size == 0)
@@ -139,84 +144,180 @@ inline bool bytesEqual(const uint8_t *left, const uint8_t *right, size_t size) {
 	return true;
 }
 
-inline bool consumeLiteral(const char *&cursor, const char *end, const char *literal) {
-	if (cursor == nullptr || end == nullptr || literal == nullptr || cursor > end)
+inline bool hasExactCString(const char *value, const char *expected, size_t expectedSize) {
+	if (value == nullptr || expected == nullptr || expectedSize == 0)
 		return false;
-	for (size_t i = 0; literal[i] != '\0'; i++) {
-		if (cursor == end || *cursor != literal[i])
+	for (size_t i = 0; i < expectedSize; i++) {
+		if (value[i] != expected[i])
 			return false;
-		cursor++;
 	}
-	return true;
+	return value[expectedSize] == '\0';
 }
 
-inline bool consumeDecimal(const char *&cursor, const char *end, char delimiter) {
-	if (cursor == nullptr || end == nullptr || cursor >= end)
+inline bool boundedCStringsEqual(const char *left, const char *right,
+	size_t maximumSize) {
+	if (left == nullptr || right == nullptr || maximumSize == 0)
 		return false;
-	size_t digits = 0;
-	while (cursor < end && *cursor >= '0' && *cursor <= '9') {
-		if (++digits > 10)
+	for (size_t i = 0; i < maximumSize; i++) {
+		if (left[i] != right[i])
 			return false;
-		cursor++;
+		if (left[i] == '\0')
+			return true;
 	}
-	if (digits == 0 || cursor == end || *cursor != delimiter)
-		return false;
-	cursor++;
-	return true;
+	return false;
 }
 
-inline bool matchDiscordStableKrispPath(const char *path, size_t length) {
-	if (path == nullptr || length == 0 || length > MaximumPathLength)
+inline bool pathHasExactBasename(const char *path, size_t length,
+	const char *basename, size_t basenameSize) {
+	if (path == nullptr || basename == nullptr || basenameSize == 0 ||
+		length < basenameSize || length > MaximumPathLength)
 		return false;
-
-	const char *cursor = path;
-	const char *end = path + length;
-	if (!consumeLiteral(cursor, end, "/Users/"))
+	const size_t start = length - basenameSize;
+	if (start != 0 && path[start - 1] != '/')
 		return false;
-
-	const char *account = cursor;
-	while (cursor < end && *cursor != '/')
-		cursor++;
-	const size_t accountLength = static_cast<size_t>(cursor - account);
-	if (accountLength == 0 || accountLength > 255 || cursor == end)
-		return false;
-	if ((accountLength == 1 && account[0] == '.') ||
-		(accountLength == 2 && account[0] == '.' && account[1] == '.'))
-		return false;
-
-	if (!consumeLiteral(cursor, end, "/Library/Application Support/discord/app-"))
-		return false;
-	if (!consumeDecimal(cursor, end, '.'))
-		return false;
-	if (!consumeDecimal(cursor, end, '.'))
-		return false;
-	if (!consumeDecimal(cursor, end, '/'))
-		return false;
-	if (!consumeLiteral(cursor, end, "modules/discord_krisp-"))
-		return false;
-	if (!consumeDecimal(cursor, end, '/'))
-		return false;
-
-	const char *direct = cursor;
-	if (consumeLiteral(direct, end, "discord_krisp.node") && direct == end)
-		return true;
-
-	return consumeLiteral(cursor, end, "discord_krisp/discord_krisp.node") && cursor == end;
+	return bytesEqual(reinterpret_cast<const uint8_t *>(path + start),
+		reinterpret_cast<const uint8_t *>(basename), basenameSize);
 }
 
-inline TargetState classifyTarget(const uint8_t *data, size_t dataSize, uint64_t rangeOffset,
-	const ImageVariant &variant) {
-	const PatchDefinition *patch = variant.patch;
-	if (data == nullptr || patch == nullptr || patch->search == nullptr ||
-		patch->replacement == nullptr || patch->replacementSize == 0 ||
-		patch->replacementSize > patch->searchSize ||
-		patch->searchMask != nullptr || patch->searchMaskSize != 0 ||
-		patch->replacementMask != nullptr || patch->replacementMaskSize != 0)
+inline bool matchApplicationRule(const ApplicationRule &rule,
+	const char *path, size_t length) {
+	if (path == nullptr || length == 0 || length > MaximumPathLength ||
+		rule.identifier == nullptr || rule.pathRuleIdentifier == nullptr ||
+		rule.basename == nullptr || rule.pathMatcher == nullptr ||
+		rule.signingIdentifier == nullptr || rule.signingIdentifierSize == 0)
+		return false;
+	return pathHasExactBasename(path, length, rule.basename, rule.basenameSize) &&
+		rule.pathMatcher(path, length);
+}
+
+inline bool callbackRangeContainsOffset(uint64_t rangeOffset, size_t rangeSize,
+	uint64_t targetOffset) {
+	if (rangeOffset > targetOffset)
+		return false;
+	return targetOffset - rangeOffset < static_cast<uint64_t>(rangeSize);
+}
+
+inline bool catalogueMayTargetRange(const ImageVariant *const *variants,
+	size_t variantCount, uint64_t rangeOffset, size_t rangeSize) {
+	if (variants == nullptr || variantCount == 0 ||
+		variantCount > MaximumCatalogueVariants || rangeSize == 0)
+		return false;
+	for (size_t i = 0; i < variantCount; i++) {
+		const ImageVariant *variant = variants[i];
+		if (variant == nullptr)
+			continue;
+		if (variant->matchMode == MatchMode::StrictVariant &&
+			callbackRangeContainsOffset(rangeOffset, rangeSize, variant->targetFileOffset))
+			return true;
+		if (variant->matchMode == MatchMode::ReviewedSearch && ReviewedSearchModeEnabled &&
+			rangeOffset < variant->executableTextEnd) {
+			if (rangeOffset >= variant->executableTextStart ||
+				variant->executableTextStart - rangeOffset < static_cast<uint64_t>(rangeSize))
+				return true;
+		}
+	}
+	return false;
+}
+
+inline bool matchesCodeSigningPolicy(const ApplicationRule &rule,
+	const ImageIdentity &identity) {
+	if (!identity.codeValid)
+		return false;
+	switch (rule.codeSigningPolicy) {
+		case CodeSigningPolicy::ValidRuntimeNotAdHoc:
+			return identity.runtimeSigned && !identity.adHocSigned;
+		case CodeSigningPolicy::ValidAdHoc:
+			return identity.adHocSigned && !identity.runtimeSigned;
+	}
+	return false;
+}
+
+inline VariantMatchState classifyImageVariant(const ImageVariant &variant,
+	const char *path, size_t pathLength, uint64_t rangeOffset, size_t rangeSize,
+	const ImageIdentity &identity) {
+	const ApplicationRule *application = variant.application;
+	if (application == nullptr || !matchApplicationRule(*application, path, pathLength))
+		return VariantMatchState::NotCandidate;
+
+	if (variant.matchMode == MatchMode::ReviewedSearch) {
+		if (!ReviewedSearchModeEnabled)
+			return VariantMatchState::ModeDisabled;
+	} else if (!callbackRangeContainsOffset(rangeOffset, rangeSize, variant.targetFileOffset)) {
+		return VariantMatchState::NotCandidate;
+	}
+
+	if (!matchesCodeSigningPolicy(*application, identity))
+		return VariantMatchState::SigningPolicyRejected;
+	if (!hasExactCString(identity.signingIdentifier, application->signingIdentifier,
+		application->signingIdentifierSize))
+		return VariantMatchState::SigningIdentifierRejected;
+
+	if (application->teamIdentifierPolicy == TeamIdentifierPolicy::Exact) {
+		if (!hasExactCString(identity.teamIdentifier, application->teamIdentifier,
+			application->teamIdentifierSize))
+			return VariantMatchState::TeamIdentifierRejected;
+	} else if (identity.teamIdentifier != nullptr && identity.teamIdentifier[0] != '\0') {
+		return VariantMatchState::TeamIdentifierRejected;
+	}
+
+	if (identity.codeDirectoryHash == nullptr || variant.codeDirectoryHash == nullptr ||
+		variant.codeDirectoryHashSize != 20 ||
+		identity.codeDirectoryHashSize != variant.codeDirectoryHashSize ||
+		!bytesEqual(identity.codeDirectoryHash, variant.codeDirectoryHash,
+			variant.codeDirectoryHashSize))
+		return VariantMatchState::CodeDirectoryHashRejected;
+	return VariantMatchState::Approved;
+}
+
+inline VariantSelection selectImageVariant(const ImageVariant *const *variants,
+	size_t variantCount, const char *path, size_t pathLength, uint64_t rangeOffset,
+	size_t rangeSize, const ImageIdentity &identity) {
+	if (variants == nullptr || variantCount == 0 || variantCount > MaximumCatalogueVariants)
+		return {VariantMatchState::NotCandidate, nullptr};
+
+	const ImageVariant *selected = nullptr;
+	VariantMatchState firstRejection = VariantMatchState::NotCandidate;
+	for (size_t i = 0; i < variantCount; i++) {
+		if (variants[i] == nullptr)
+			continue;
+		const auto state = classifyImageVariant(*variants[i], path, pathLength,
+			rangeOffset, rangeSize, identity);
+		if (state == VariantMatchState::Approved) {
+			if (selected != nullptr)
+				return {VariantMatchState::Ambiguous, nullptr};
+			selected = variants[i];
+		} else if (state != VariantMatchState::NotCandidate &&
+			firstRejection == VariantMatchState::NotCandidate) {
+			firstRejection = state;
+		}
+	}
+	if (selected != nullptr)
+		return {VariantMatchState::Approved, selected};
+	return {firstRejection, nullptr};
+}
+
+inline bool validPatchDefinition(const PatchDefinition &patch) {
+	return patch.identifier != nullptr && patch.architecture != nullptr &&
+		patch.search != nullptr && patch.searchSize != 0 &&
+		patch.replacement != nullptr && patch.replacementSize != 0 &&
+		patch.replacementSize <= patch.searchSize &&
+		patch.searchMask == nullptr && patch.searchMaskSize == 0 &&
+		patch.replacementMask == nullptr && patch.replacementMaskSize == 0 &&
+		patch.validationPolicy == PatchValidationPolicy::ExactBytesAndContext &&
+		patch.contextBefore != nullptr && patch.contextBeforeSize != 0 &&
+		patch.contextAfter != nullptr && patch.contextAfterSize != 0;
+}
+
+inline TargetState classifyTarget(const uint8_t *data, size_t dataSize,
+	uint64_t rangeOffset, const ImageVariant &variant, const PatchDefinition &patch) {
+	if (data == nullptr || !validPatchDefinition(patch) ||
+		!boundedCStringsEqual(patch.architecture, variant.architecture, 16))
 		return TargetState::Mismatch;
-
+	if (variant.matchMode != MatchMode::StrictVariant)
+		return TargetState::ModeDisabled;
 	if (variant.targetFileOffset < variant.executableTextStart ||
 		variant.targetFileOffset > variant.executableTextEnd ||
-		patch->searchSize > variant.executableTextEnd - variant.targetFileOffset)
+		patch.searchSize > variant.executableTextEnd - variant.targetFileOffset)
 		return TargetState::Mismatch;
 
 	if (rangeOffset > variant.targetFileOffset)
@@ -225,40 +326,70 @@ inline TargetState classifyTarget(const uint8_t *data, size_t dataSize, uint64_t
 	if (relative64 > static_cast<uint64_t>(dataSize))
 		return TargetState::NotCovered;
 	const size_t relative = static_cast<size_t>(relative64);
-	if (patch->contextBeforeSize > relative)
+	if (patch.contextBeforeSize > relative)
 		return TargetState::NotCovered;
-	if (patch->searchSize > dataSize - relative)
+	if (patch.searchSize > dataSize - relative)
 		return TargetState::NotCovered;
-	const size_t afterOffset = relative + patch->searchSize;
-	if (patch->contextAfterSize > dataSize - afterOffset)
+	const size_t afterOffset = relative + patch.searchSize;
+	if (patch.contextAfterSize > dataSize - afterOffset)
 		return TargetState::NotCovered;
 
-	if (!bytesEqual(data + relative - patch->contextBeforeSize,
-		patch->contextBefore, patch->contextBeforeSize) ||
-		!bytesEqual(data + afterOffset, patch->contextAfter, patch->contextAfterSize))
+	if (!bytesEqual(data + relative - patch.contextBeforeSize,
+		patch.contextBefore, patch.contextBeforeSize) ||
+		!bytesEqual(data + afterOffset, patch.contextAfter, patch.contextAfterSize))
 		return TargetState::Mismatch;
-
-	if (bytesEqual(data + relative, patch->search, patch->searchSize))
+	if (bytesEqual(data + relative, patch.search, patch.searchSize))
 		return TargetState::Original;
-
-	if (bytesEqual(data + relative, patch->replacement, patch->replacementSize) &&
-		bytesEqual(data + relative + patch->replacementSize,
-			patch->search + patch->replacementSize,
-			patch->searchSize - patch->replacementSize))
+	if (bytesEqual(data + relative, patch.replacement, patch.replacementSize) &&
+		bytesEqual(data + relative + patch.replacementSize,
+			patch.search + patch.replacementSize,
+			patch.searchSize - patch.replacementSize))
 		return TargetState::AlreadyPatched;
-
 	return TargetState::Mismatch;
 }
 
+inline PatchSelection selectStrictPatch(const uint8_t *data, size_t dataSize,
+	uint64_t rangeOffset, const ImageVariant &variant) {
+	if (variant.matchMode != MatchMode::StrictVariant)
+		return {TargetState::ModeDisabled, nullptr};
+	if (variant.allowedPatches == nullptr || variant.allowedPatchCount == 0 ||
+		variant.allowedPatchCount > MaximumAllowedPatchesPerVariant)
+		return {TargetState::Mismatch, nullptr};
+
+	const PatchDefinition *selected = nullptr;
+	TargetState selectedState = TargetState::Mismatch;
+	bool everyDefinitionNotCovered = true;
+	for (size_t i = 0; i < variant.allowedPatchCount; i++) {
+		const PatchDefinition *patch = variant.allowedPatches[i];
+		if (patch == nullptr) {
+			everyDefinitionNotCovered = false;
+			continue;
+		}
+		const auto state = classifyTarget(data, dataSize, rangeOffset, variant, *patch);
+		if (state != TargetState::NotCovered)
+			everyDefinitionNotCovered = false;
+		if (state == TargetState::Original || state == TargetState::AlreadyPatched) {
+			if (selected != nullptr)
+				return {TargetState::Ambiguous, nullptr};
+			selected = patch;
+			selectedState = state;
+		}
+	}
+	if (selected != nullptr)
+		return {selectedState, selected};
+	return {everyDefinitionNotCovered ? TargetState::NotCovered : TargetState::Mismatch, nullptr};
+}
+
 inline uint8_t *targetPointer(uint8_t *data, size_t dataSize, uint64_t rangeOffset,
-	const ImageVariant &variant) {
-	if (data == nullptr || rangeOffset > variant.targetFileOffset)
+	const ImageVariant &variant, const PatchDefinition &patch) {
+	if (data == nullptr || !validPatchDefinition(patch) ||
+		rangeOffset > variant.targetFileOffset)
 		return nullptr;
 	const uint64_t relative = variant.targetFileOffset - rangeOffset;
 	if (relative > static_cast<uint64_t>(dataSize))
 		return nullptr;
 	const size_t offset = static_cast<size_t>(relative);
-	if (variant.patch == nullptr || variant.patch->replacementSize > dataSize - offset)
+	if (patch.replacementSize > dataSize - offset)
 		return nullptr;
 	return data + offset;
 }

@@ -45,6 +45,12 @@ jobs:
         run: |
           git diff --check
           plutil -lint IntelMKLFixup/Info.plist
+          clang++ -std=c++14 -Wall -Wextra -Werror -pedantic \
+            Tests/PolicyTests/PolicyTests.cpp -o "$RUNNER_TEMP/imklfx-policy-tests"
+          "$RUNNER_TEMP/imklfx-policy-tests"
+          clang++ -std=c++14 -Wall -Wextra -Werror -pedantic \
+            Tests/PolicyTests/CatalogueTests.cpp -o "$RUNNER_TEMP/imklfx-catalogue-tests"
+          "$RUNNER_TEMP/imklfx-catalogue-tests"
           swift test
           swift run imklfx-whitelist validate --manifest whitelist/manifest.json
 

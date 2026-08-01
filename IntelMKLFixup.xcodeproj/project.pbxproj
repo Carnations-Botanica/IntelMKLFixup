@@ -42,6 +42,7 @@
 		CE8DA0CB2517DE74008C44E8 /* libkmod.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libkmod.a; path = ../Lilu/MacKernelSDK/Library/x86_64/libkmod.a; sourceTree = "<group>"; };
 		CEAAA50821FC976100683764 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		CEAAA50921FC976100683764 /* IntelMKLFixup.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = IntelMKLFixup.cpp; sourceTree = "<group>"; };
+		CEAAA50E21FC976100683764 /* IntelMKLFixupCatalogue.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = IntelMKLFixupCatalogue.hpp; sourceTree = "<group>"; };
 		CEAAA50D21FC976100683764 /* IntelMKLFixupPolicy.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = IntelMKLFixupPolicy.hpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -127,6 +128,7 @@
 			children = (
 				CEAAA50821FC976100683764 /* Info.plist */,
 				CEAAA50921FC976100683764 /* IntelMKLFixup.cpp */,
+				CEAAA50E21FC976100683764 /* IntelMKLFixupCatalogue.hpp */,
 				CEAAA50D21FC976100683764 /* IntelMKLFixupPolicy.hpp */,
 			);
 			path = IntelMKLFixup;

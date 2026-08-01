@@ -22,7 +22,7 @@
 #include <kern/cs_blobs.h>
 #include <sys/vnode.h>
 
-#include "IntelMKLFixupPolicy.hpp"
+#include "IntelMKLFixupCatalogue.hpp"
 
 #define MODULE_SHORT "imklfx"
 
@@ -45,26 +45,23 @@ static bool verboseLogging {false};
 static bool dryRunMode {false};
 static bool builtInOnlyRequested {false};
 
-enum class ImageResult : uint8_t {
-	NotCandidate,
-	Approved,
-	CodeBlobUnavailable,
-	SigningFlagsRejected,
-	SigningIdentifierRejected,
-	TeamIdentifierRejected,
-	CodeDirectoryHashRejected
-};
-
 enum class ApplyResult : uint8_t {
 	DryRunMatch,
 	Patched,
 	AlreadyPatched,
 	SignatureRejected,
 	RangeRejected,
+	ModeRejected,
+	AmbiguousPatch,
 	ConcurrentChangeRejected,
 	WriteProtectionFailure,
 	RestoreProtectionFailure,
 	VerificationFailure
+};
+
+struct ApplyOutcome {
+	ApplyResult result;
+	const IMKLFX::PatchDefinition *patch;
 };
 
 template <typename T>
@@ -80,231 +77,245 @@ bool solveRequiredSymbol(KernelPatcher &patcher, const char *name, T &function) 
 	return true;
 }
 
-bool hasExactCString(const char *value, const char *expected, size_t expectedSize) {
-	if (value == nullptr || expected == nullptr || expectedSize == 0)
-		return false;
-	for (size_t i = 0; i < expectedSize; i++) {
-		if (value[i] != expected[i])
-			return false;
-	}
-	return value[expectedSize] == '\0';
-}
-
-bool getDiscordCandidatePath(vnode_t vp, char *path, size_t &pathLength) {
+bool getCandidatePath(vnode_t vp, char *path, size_t &pathLength) {
 	pathLength = 0;
 	if (vp == nullptr || path == nullptr || vnode_vtype(vp) != VREG)
 		return false;
 
 	int returnedLength = PATH_MAX;
-	if (vn_getpath(vp, path, &returnedLength) != 0 ||
-		returnedLength <= 1 || returnedLength > PATH_MAX || path[returnedLength - 1] != '\0')
+	if (vn_getpath(vp, path, &returnedLength) != 0 || returnedLength <= 1 ||
+		returnedLength > PATH_MAX || path[returnedLength - 1] != '\0')
 		return false;
 
 	pathLength = static_cast<size_t>(returnedLength - 1);
-	return IMKLFX::matchDiscordStableKrispPath(path, pathLength);
+	return pathLength <= IMKLFX::MaximumPathLength;
 }
 
-void logRedactedCandidatePath(const char *path, size_t pathLength) {
+const IMKLFX::ApplicationRule *firstMatchingApplication(const char *path,
+	size_t pathLength) {
+	for (size_t i = 0; i < IMKLFX::BuiltInApplicationRuleCount; i++) {
+		const auto *application = IMKLFX::BuiltInApplicationRules[i];
+		if (application != nullptr && IMKLFX::matchApplicationRule(*application,
+			path, pathLength))
+			return application;
+	}
+	return nullptr;
+}
+
+void logCandidatePath(const IMKLFX::ApplicationRule &application,
+	const char *path, size_t pathLength) {
 	if (!verboseLogging || path == nullptr || pathLength == 0)
 		return;
 
 	static constexpr char UserPrefix[] = "/Users/";
-	if (pathLength <= sizeof(UserPrefix) - 1)
-		return;
-	const char *cursor = path + sizeof(UserPrefix) - 1;
-	const char *end = path + pathLength;
-	while (cursor < end && *cursor != '/')
-		cursor++;
-	if (cursor < end)
-		SYSLOG(MODULE_SHORT, "verbose candidate=discord-stable-krisp path=~%s", cursor);
+	if (pathLength > sizeof(UserPrefix) - 1 &&
+		IMKLFX::bytesEqual(reinterpret_cast<const uint8_t *>(path),
+			reinterpret_cast<const uint8_t *>(UserPrefix), sizeof(UserPrefix) - 1)) {
+		const char *cursor = path + sizeof(UserPrefix) - 1;
+		const char *end = path + pathLength;
+		while (cursor < end && *cursor != '/')
+			cursor++;
+		if (cursor < end) {
+			SYSLOG(MODULE_SHORT, "verbose candidate=%s path=~%s",
+				application.identifier, cursor);
+			return;
+		}
+	}
+	SYSLOG(MODULE_SHORT, "verbose candidate=%s path=%s", application.identifier, path);
 }
 
-const char *imageResultReason(ImageResult result) {
+const char *variantResultReason(IMKLFX::VariantMatchState result) {
 	switch (result) {
-		case ImageResult::CodeBlobUnavailable:
-			return "code-blob-unavailable";
-		case ImageResult::SigningFlagsRejected:
-			return "signing-flags";
-		case ImageResult::SigningIdentifierRejected:
+		case IMKLFX::VariantMatchState::ModeDisabled:
+			return "policy-mode-disabled";
+		case IMKLFX::VariantMatchState::SigningPolicyRejected:
+			return "signing-policy";
+		case IMKLFX::VariantMatchState::SigningIdentifierRejected:
 			return "signing-identifier";
-		case ImageResult::TeamIdentifierRejected:
+		case IMKLFX::VariantMatchState::TeamIdentifierRejected:
 			return "team-identifier";
-		case ImageResult::CodeDirectoryHashRejected:
+		case IMKLFX::VariantMatchState::CodeDirectoryHashRejected:
 			return "cdhash";
-		case ImageResult::NotCandidate:
+		case IMKLFX::VariantMatchState::Ambiguous:
+			return "ambiguous-image-variant";
+		case IMKLFX::VariantMatchState::NotCandidate:
 			return "not-candidate";
-		case ImageResult::Approved:
+		case IMKLFX::VariantMatchState::Approved:
 			return "approved";
 	}
 	return "unknown";
 }
 
-ImageResult inspectImage(vnode_t vp, memory_object_offset_t pageOffset) {
-	if (csVnodeGetBlob == nullptr || csBlobGetIdentity == nullptr ||
-		csBlobGetTeamId == nullptr || csBlobGetCdHash == nullptr ||
-		csBlobGetFlags == nullptr)
-		return ImageResult::NotCandidate;
-
-	char path[PATH_MAX] {};
-	size_t pathLength {};
-	if (!getDiscordCandidatePath(vp, path, pathLength))
-		return ImageResult::NotCandidate;
-	logRedactedCandidatePath(path, pathLength);
-
-	auto blob = csVnodeGetBlob(vp, static_cast<off_t>(pageOffset));
-	if (blob == nullptr)
-		return ImageResult::CodeBlobUnavailable;
-
-	const auto &variant = IMKLFX::DiscordStable00403KrispX8664;
-	static constexpr unsigned int RequiredCodeSigningFlags = CS_VALID | CS_RUNTIME;
-	static constexpr unsigned int ForbiddenCodeSigningFlags = CS_ADHOC;
-	const unsigned int flags = csBlobGetFlags(blob);
-	if ((flags & RequiredCodeSigningFlags) != RequiredCodeSigningFlags ||
-		(flags & ForbiddenCodeSigningFlags) != 0)
-		return ImageResult::SigningFlagsRejected;
-
-	const char *identity = csBlobGetIdentity(blob);
-	const char *team = csBlobGetTeamId(blob);
-	const uint8_t *cdhash = csBlobGetCdHash(blob);
-
-	static constexpr size_t SigningIdentifierSize = sizeof("discord_krisp") - 1;
-	static constexpr size_t TeamIdentifierSize = sizeof("53Q6R32WPB") - 1;
-
-	if (!hasExactCString(identity, variant.signingIdentifier, SigningIdentifierSize))
-		return ImageResult::SigningIdentifierRejected;
-	if (!hasExactCString(team, variant.teamIdentifier, TeamIdentifierSize))
-		return ImageResult::TeamIdentifierRejected;
-	if (cdhash == nullptr ||
-		!IMKLFX::bytesEqual(cdhash, variant.codeDirectoryHash, variant.codeDirectoryHashSize))
-		return ImageResult::CodeDirectoryHashRejected;
-
-	SYSLOG_COND(verboseLogging, MODULE_SHORT,
-		"verbose candidate=%s image=%s signing-id=%s team-id=%s patch=%s identity=approved",
-		variant.applicationIdentifier, variant.identifier, variant.signingIdentifier,
-		variant.teamIdentifier, variant.patch->identifier);
-	return ImageResult::Approved;
-}
-
-ApplyResult applyApprovedPatch(const void *data, size_t size, memory_object_offset_t pageOffset,
+ApplyOutcome applyApprovedPatch(const void *data, size_t size,
+	memory_object_offset_t pageOffset, const IMKLFX::ImageVariant &variant,
 	bool dryRun) {
-	const auto &variant = IMKLFX::DiscordStable00403KrispX8664;
 	const auto *bytes = static_cast<const uint8_t *>(data);
-	auto state = IMKLFX::classifyTarget(bytes, size, pageOffset, variant);
-	if (state == IMKLFX::TargetState::AlreadyPatched)
-		return ApplyResult::AlreadyPatched;
-	if (state == IMKLFX::TargetState::NotCovered)
-		return ApplyResult::RangeRejected;
-	if (state != IMKLFX::TargetState::Original)
-		return ApplyResult::SignatureRejected;
+	auto selection = IMKLFX::selectStrictPatch(bytes, size, pageOffset, variant);
+	if (selection.state == IMKLFX::TargetState::AlreadyPatched)
+		return {ApplyResult::AlreadyPatched, selection.patch};
+	if (selection.state == IMKLFX::TargetState::NotCovered)
+		return {ApplyResult::RangeRejected, nullptr};
+	if (selection.state == IMKLFX::TargetState::ModeDisabled)
+		return {ApplyResult::ModeRejected, nullptr};
+	if (selection.state == IMKLFX::TargetState::Ambiguous)
+		return {ApplyResult::AmbiguousPatch, nullptr};
+	if (selection.state != IMKLFX::TargetState::Original || selection.patch == nullptr)
+		return {ApplyResult::SignatureRejected, nullptr};
 	if (dryRun)
-		return ApplyResult::DryRunMatch;
+		return {ApplyResult::DryRunMatch, selection.patch};
 	if (KernelPatcher::kernelWriteLock == nullptr ||
 		MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return ApplyResult::WriteProtectionFailure;
+		return {ApplyResult::WriteProtectionFailure, selection.patch};
 
 	ApplyResult result = ApplyResult::ConcurrentChangeRejected;
-	state = IMKLFX::classifyTarget(bytes, size, pageOffset, variant);
-	if (state == IMKLFX::TargetState::AlreadyPatched) {
+	const auto *matchedPatch = selection.patch;
+	selection = IMKLFX::selectStrictPatch(bytes, size, pageOffset, variant);
+	if (selection.state == IMKLFX::TargetState::AlreadyPatched &&
+		selection.patch == matchedPatch) {
 		result = ApplyResult::AlreadyPatched;
-	} else if (state == IMKLFX::TargetState::Original) {
-		auto target = IMKLFX::targetPointer(const_cast<uint8_t *>(bytes), size, pageOffset, variant);
+	} else if (selection.state == IMKLFX::TargetState::Original &&
+		selection.patch == matchedPatch) {
+		auto target = IMKLFX::targetPointer(const_cast<uint8_t *>(bytes), size,
+			pageOffset, variant, *matchedPatch);
 		if (target != nullptr) {
-			lilu_os_memcpy(target, variant.patch->replacement, variant.patch->replacementSize);
-			result = IMKLFX::classifyTarget(bytes, size, pageOffset, variant) == IMKLFX::TargetState::AlreadyPatched ?
+			lilu_os_memcpy(target, matchedPatch->replacement, matchedPatch->replacementSize);
+			result = IMKLFX::classifyTarget(bytes, size, pageOffset, variant,
+				*matchedPatch) == IMKLFX::TargetState::AlreadyPatched ?
 				ApplyResult::Patched : ApplyResult::VerificationFailure;
 		}
 	}
 
 	if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return ApplyResult::RestoreProtectionFailure;
-	return result;
+		return {ApplyResult::RestoreProtectionFailure, matchedPatch};
+	return {result, matchedPatch};
 }
 
-void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset, const void *data,
-	int *validated, int *tainted, int *nx) {
-	const auto &variant = IMKLFX::DiscordStable00403KrispX8664;
-	static constexpr uint64_t PageMask = static_cast<uint64_t>(PAGE_SIZE) - 1;
-	static_assert(PAGE_SIZE == 4096, "the x86_64 validation-bit policy requires 4 KiB pages");
-	static_assert((IMKLFX::DiscordStable00403KrispX8664.targetFileOffset & PageMask) >=
-		sizeof(IMKLFX::MklServIntelCpuTrueContextBeforeV1), "before-context must fit in one page");
-	static_assert((IMKLFX::DiscordStable00403KrispX8664.targetFileOffset & PageMask) +
-		sizeof(IMKLFX::MklServIntelCpuTrueSearchV1) +
-		sizeof(IMKLFX::MklServIntelCpuTrueContextAfterV1) <= PAGE_SIZE,
-		"target and context must fit in one page");
-
-	if (vp == nullptr || data == nullptr || validated == nullptr || tainted == nullptr || nx == nullptr)
-		return;
-	if ((static_cast<uint64_t>(pageOffset) & ~PageMask) != (variant.targetFileOffset & ~PageMask))
-		return;
-
-	// The target is in the first 4 KiB validation subrange on x86_64.
-	static constexpr int TargetValidationBit = 1;
-	if ((*validated & TargetValidationBit) == 0 ||
-		(*tainted & TargetValidationBit) != 0 || (*nx & TargetValidationBit) != 0) {
-		if (verboseLogging) {
-			char path[PATH_MAX] {};
-			size_t pathLength {};
-			if (getDiscordCandidatePath(vp, path, pathLength)) {
-				logRedactedCandidatePath(path, pathLength);
-				SYSLOG(MODULE_SHORT,
-					"candidate=%s outcome=rejected reason=xnu-page-validation validated=0x%x tainted=0x%x nx=0x%x",
-					variant.applicationIdentifier, *validated, *tainted, *nx);
-			}
-		}
-		return;
-	}
-
-	const auto imageResult = inspectImage(vp, pageOffset);
-	if (imageResult == ImageResult::NotCandidate)
-		return;
-	if (imageResult != ImageResult::Approved) {
-		SYSLOG(MODULE_SHORT, "candidate=%s outcome=rejected reason=%s",
-			variant.applicationIdentifier, imageResultReason(imageResult));
-		return;
-	}
-
-	const auto result = applyApprovedPatch(data, PAGE_SIZE, pageOffset, dryRunMode);
-	switch (result) {
+void logApplyOutcome(const IMKLFX::ImageVariant &variant,
+	const ApplyOutcome &outcome) {
+	const char *patchIdentifier = outcome.patch != nullptr ?
+		outcome.patch->identifier : "none";
+	switch (outcome.result) {
 		case ApplyResult::DryRunMatch:
 			SYSLOG(MODULE_SHORT,
 				"image=%s patch=%s signature=supported outcome=dry-run modified=no",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::Patched:
 			SYSLOG(MODULE_SHORT,
 				"image=%s patch=%s signature=supported outcome=patched modified=yes",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::AlreadyPatched:
 			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=skipped reason=already-patched",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::SignatureRejected:
 			SYSLOG(MODULE_SHORT,
 				"image=%s patch=%s outcome=rejected reason=signature-or-context",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::RangeRejected:
 			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=callback-range",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
+			break;
+		case ApplyResult::ModeRejected:
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=policy-mode-disabled",
+				variant.identifier, patchIdentifier);
+			break;
+		case ApplyResult::AmbiguousPatch:
+			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=ambiguous-patch",
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::ConcurrentChangeRejected:
 			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=concurrent-change",
-				variant.identifier, variant.patch->identifier);
+				variant.identifier, patchIdentifier);
 			break;
 		case ApplyResult::WriteProtectionFailure:
 			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-change",
-				variant.patch->identifier);
+				patchIdentifier);
 			break;
 		case ApplyResult::RestoreProtectionFailure:
 			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-restore",
-				variant.patch->identifier);
+				patchIdentifier);
 			break;
 		case ApplyResult::VerificationFailure:
 			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=replacement-verification",
-				variant.patch->identifier);
+				patchIdentifier);
 			break;
 	}
+}
+
+void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset,
+	const void *data, int *validated, int *tainted, int *nx) {
+	static constexpr int TargetValidationBit = 1;
+	static_assert(PAGE_SIZE == 4096,
+		"the x86_64 validation-bit policy requires 4 KiB pages");
+
+	if (vp == nullptr || data == nullptr || validated == nullptr ||
+		tainted == nullptr || nx == nullptr)
+		return;
+	if (!IMKLFX::catalogueMayTargetRange(IMKLFX::BuiltInImageVariants,
+		IMKLFX::BuiltInImageVariantCount, pageOffset, PAGE_SIZE))
+		return;
+
+	char path[PATH_MAX] {};
+	size_t pathLength {};
+	if (!getCandidatePath(vp, path, pathLength))
+		return;
+	const auto *candidateApplication = firstMatchingApplication(path, pathLength);
+	if (candidateApplication == nullptr)
+		return;
+	logCandidatePath(*candidateApplication, path, pathLength);
+
+	if ((*validated & TargetValidationBit) == 0 ||
+		(*tainted & TargetValidationBit) != 0 || (*nx & TargetValidationBit) != 0) {
+		SYSLOG_COND(verboseLogging, MODULE_SHORT,
+			"candidate=%s outcome=rejected reason=xnu-page-validation validated=0x%x tainted=0x%x nx=0x%x",
+			candidateApplication->identifier, *validated, *tainted, *nx);
+		return;
+	}
+
+	if (csVnodeGetBlob == nullptr || csBlobGetIdentity == nullptr ||
+		csBlobGetTeamId == nullptr || csBlobGetCdHash == nullptr ||
+		csBlobGetFlags == nullptr)
+		return;
+	auto blob = csVnodeGetBlob(vp, static_cast<off_t>(pageOffset));
+	if (blob == nullptr) {
+		SYSLOG(MODULE_SHORT, "candidate=%s outcome=rejected reason=code-blob-unavailable",
+			candidateApplication->identifier);
+		return;
+	}
+
+	const unsigned int flags = csBlobGetFlags(blob);
+	const IMKLFX::ImageIdentity identity {
+		csBlobGetIdentity(blob),
+		csBlobGetTeamId(blob),
+		csBlobGetCdHash(blob),
+		20,
+		(flags & CS_VALID) != 0,
+		(flags & CS_RUNTIME) != 0,
+		(flags & CS_ADHOC) != 0
+	};
+	const auto selection = IMKLFX::selectImageVariant(IMKLFX::BuiltInImageVariants,
+		IMKLFX::BuiltInImageVariantCount, path, pathLength, pageOffset, PAGE_SIZE,
+		identity);
+	if (selection.state != IMKLFX::VariantMatchState::Approved ||
+		selection.variant == nullptr) {
+		if (selection.state != IMKLFX::VariantMatchState::NotCandidate) {
+			SYSLOG(MODULE_SHORT, "candidate=%s outcome=rejected reason=%s",
+				candidateApplication->identifier, variantResultReason(selection.state));
+		}
+		return;
+	}
+
+	const auto &variant = *selection.variant;
+	SYSLOG_COND(verboseLogging, MODULE_SHORT,
+		"verbose candidate=%s image=%s signing-id=%s patch-policy-count=%lu identity=approved",
+		variant.application->identifier, variant.identifier,
+		variant.application->signingIdentifier,
+		static_cast<unsigned long>(variant.allowedPatchCount));
+	logApplyOutcome(variant, applyApprovedPatch(data, PAGE_SIZE, pageOffset,
+		variant, dryRunMode));
 }
 
 void wrapCsValidatePage(vnode_t vp, memory_object_t pager,
@@ -340,7 +351,10 @@ bool prepareAndRoute(KernelPatcher &patcher) {
 		return false;
 	}
 
-	SYSLOG(MODULE_SHORT, "lifecycle=route-installed darwin=24 cpu=amd");
+	SYSLOG(MODULE_SHORT,
+		"lifecycle=route-installed darwin=24 cpu=amd applications=%lu variants=%lu reviewed-search=disabled",
+		static_cast<unsigned long>(IMKLFX::BuiltInApplicationRuleCount),
+		static_cast<unsigned long>(IMKLFX::BuiltInImageVariantCount));
 	return true;
 }
 
@@ -371,7 +385,7 @@ PluginConfiguration ADDPR(config) {
 		dryRunMode = checkKernelArgument("-imklfxdryrun");
 		builtInOnlyRequested = checkKernelArgument("-imklfxbuiltin");
 		SYSLOG(MODULE_SHORT,
-			"lifecycle=loaded mode=%s whitelist=builtin-only explicit-builtin=%d verbose=%d",
+			"lifecycle=loaded mode=%s whitelist=builtin-only explicit-builtin=%d verbose=%d reviewed-search=disabled",
 			dryRunMode ? "dry-run" : "patch", builtInOnlyRequested, verboseLogging);
 		auto error = lilu.onPatcherLoad([](void *, KernelPatcher &patcher) {
 			if ((lilu.getRunMode() & LiluAPI::RunningNormal) != 0) {
