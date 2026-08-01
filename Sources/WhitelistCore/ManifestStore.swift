@@ -20,6 +20,7 @@ private struct StoreState {
 public final class ManifestStore {
 	public static let stateFileName = "state.json"
 	public static let versionsDirectoryName = "versions"
+	public static let lockFileName = ".update.lock"
 
 	public let root: URL
 	public let authenticator: ManifestAuthenticator
@@ -78,66 +79,69 @@ public final class ManifestStore {
 		now: Date = Date(),
 		hooks: StoreHooks = StoreHooks()
 	) throws -> InstallReport {
-		let state = try loadState()
-		let current = try state.map {
-			try loadArtifact(identifier: $0.currentArtifact, now: now, enforceTemporalValidity: false)
-		}
-		try enforceMonotonicity(artifact, state: state, current: current)
+		try withExclusiveStoreLock {
+			let state = try loadState()
+			let current = try state.map {
+				try loadArtifact(identifier: $0.currentArtifact, now: now, enforceTemporalValidity: false)
+			}
+			try enforceMonotonicity(artifact, state: state, current: current)
 
-		let identifier = artifactIdentifier(for: artifact)
-		let difference = ManifestDifference.compare(current?.manifest, artifact.manifest)
-		if current?.sha256 == artifact.sha256 {
-			return InstallReport(installed: false, difference: difference, artifactIdentifier: identifier)
-		}
+			let identifier = artifactIdentifier(for: artifact)
+			let difference = ManifestDifference.compare(current?.manifest, artifact.manifest)
+			if current?.sha256 == artifact.sha256 {
+				return InstallReport(installed: false, difference: difference, artifactIdentifier: identifier)
+			}
 
-		try prepareDirectories()
-		try persistArtifact(artifact, identifier: identifier)
-		try hooks.beforeStateCommit?()
-		let advancesHighest = artifact.manifest.manifestVersion > (state?.highestAcceptedVersion ?? 0)
-		let nextState = StoreState(
-			currentArtifact: identifier,
-			previousArtifact: state?.currentArtifact,
-			highestAcceptedVersion: max(
-				state?.highestAcceptedVersion ?? 0,
-				artifact.manifest.manifestVersion
-			),
-			highestAcceptedSHA256: advancesHighest ? artifact.sha256 :
-				(state?.highestAcceptedSHA256 ?? artifact.sha256)
-		)
-		try writeStateAtomically(nextState)
-		return InstallReport(installed: true, difference: difference, artifactIdentifier: identifier)
+			try persistArtifact(artifact, identifier: identifier)
+			try hooks.beforeStateCommit?()
+			let advancesHighest = artifact.manifest.manifestVersion > (state?.highestAcceptedVersion ?? 0)
+			let nextState = StoreState(
+				currentArtifact: identifier,
+				previousArtifact: state?.currentArtifact,
+				highestAcceptedVersion: max(
+					state?.highestAcceptedVersion ?? 0,
+					artifact.manifest.manifestVersion
+				),
+				highestAcceptedSHA256: advancesHighest ? artifact.sha256 :
+					(state?.highestAcceptedSHA256 ?? artifact.sha256)
+			)
+			try writeStateAtomically(nextState)
+			return InstallReport(installed: true, difference: difference, artifactIdentifier: identifier)
+		}
 	}
 
 	public func rollback(now: Date = Date(), hooks: StoreHooks = StoreHooks()) throws -> InstallReport {
-		guard let state = try loadState() else {
-			throw WhitelistError.noInstalledManifest
-		}
-		guard let previousIdentifier = state.previousArtifact else {
-			throw WhitelistError.noRollbackManifest
-		}
+		try withExclusiveStoreLock {
+			guard let state = try loadState() else {
+				throw WhitelistError.noInstalledManifest
+			}
+			guard let previousIdentifier = state.previousArtifact else {
+				throw WhitelistError.noRollbackManifest
+			}
 
-		let current = try loadArtifact(
-			identifier: state.currentArtifact,
-			now: now,
-			enforceTemporalValidity: false
-		)
-		// Rollback is an explicit downgrade exception, but the target must still
-		// carry a valid signature, pass schema checks, remain compatible, and not
-		// be expired.
-		let previous = try loadArtifact(identifier: previousIdentifier, now: now)
-		let difference = ManifestDifference.compare(current.manifest, previous.manifest)
-		try hooks.beforeStateCommit?()
-		try writeStateAtomically(StoreState(
-			currentArtifact: previousIdentifier,
-			previousArtifact: state.currentArtifact,
-			highestAcceptedVersion: state.highestAcceptedVersion,
-			highestAcceptedSHA256: state.highestAcceptedSHA256
-		))
-		return InstallReport(
-			installed: true,
-			difference: difference,
-			artifactIdentifier: previousIdentifier
-		)
+			let current = try loadArtifact(
+				identifier: state.currentArtifact,
+				now: now,
+				enforceTemporalValidity: false
+			)
+			// Rollback is an explicit downgrade exception, but the target must still
+			// carry a valid signature, pass schema checks, remain compatible, and not
+			// be expired.
+			let previous = try loadArtifact(identifier: previousIdentifier, now: now)
+			let difference = ManifestDifference.compare(current.manifest, previous.manifest)
+			try hooks.beforeStateCommit?()
+			try writeStateAtomically(StoreState(
+				currentArtifact: previousIdentifier,
+				previousArtifact: state.currentArtifact,
+				highestAcceptedVersion: state.highestAcceptedVersion,
+				highestAcceptedSHA256: state.highestAcceptedSHA256
+			))
+			return InstallReport(
+				installed: true,
+				difference: difference,
+				artifactIdentifier: previousIdentifier
+			)
+		}
 	}
 
 	private func enforceMonotonicity(
@@ -167,17 +171,51 @@ public final class ManifestStore {
 	}
 
 	private func prepareDirectories() throws {
-		try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-		try fileManager.createDirectory(
-			at: root.appendingPathComponent(Self.versionsDirectoryName, isDirectory: true),
-			withIntermediateDirectories: true
+		try createOrValidateDirectory(root, kind: "store root")
+		try createOrValidateDirectory(
+			root.appendingPathComponent(Self.versionsDirectoryName, isDirectory: true),
+			kind: "versions directory"
 		)
+	}
+
+	private func createOrValidateDirectory(_ url: URL, kind: String) throws {
+		if try nodeType(at: url) == nil {
+			try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+		}
+		guard try nodeType(at: url) == mode_t(S_IFDIR) else {
+			throw WhitelistError.corruptStore("\(kind) is not a real directory")
+		}
+		try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+	}
+
+	private func withExclusiveStoreLock<T>(_ body: () throws -> T) throws -> T {
+		try prepareDirectories()
+		let lockURL = root.appendingPathComponent(Self.lockFileName)
+		let descriptor = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+		guard descriptor >= 0 else {
+			throw WhitelistError.corruptStore("could not open the updater lock without following links")
+		}
+		defer { close(descriptor) }
+
+		var information = stat()
+		guard fstat(descriptor, &information) == 0,
+			(information.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+			throw WhitelistError.corruptStore("updater lock is not a regular file")
+		}
+		guard flock(descriptor, LOCK_EX) == 0 else {
+			throw WhitelistError.corruptStore("could not acquire the updater lock")
+		}
+		defer { flock(descriptor, LOCK_UN) }
+		return try body()
 	}
 
 	private func persistArtifact(_ artifact: SignedManifestArtifact, identifier: String) throws {
 		let versions = root.appendingPathComponent(Self.versionsDirectoryName, isDirectory: true)
 		let destination = versions.appendingPathComponent(identifier, isDirectory: true)
-		if fileManager.fileExists(atPath: destination.path) {
+		if try nodeType(at: destination) != nil {
+			guard try nodeType(at: destination) == mode_t(S_IFDIR) else {
+				throw WhitelistError.corruptStore("artifact path is not a real directory")
+			}
 			let existing = try loadArtifact(identifier: identifier, enforceTemporalValidity: false)
 			guard existing.sha256 == artifact.sha256,
 				existing.signatureData == artifact.signatureData else {
@@ -227,6 +265,9 @@ public final class ManifestStore {
 		let directory = root
 			.appendingPathComponent(Self.versionsDirectoryName, isDirectory: true)
 			.appendingPathComponent(identifier, isDirectory: true)
+		guard try nodeType(at: directory) == mode_t(S_IFDIR) else {
+			throw WhitelistError.corruptStore("artifact directory is missing or is a link")
+		}
 		let manifestURL = directory.appendingPathComponent("manifest.json")
 		let signatureURL = directory.appendingPathComponent("manifest.sig")
 		let manifestData = try boundedRead(
@@ -253,17 +294,31 @@ public final class ManifestStore {
 	}
 
 	private func boundedRead(_ url: URL, maximumSize: Int, kind: String) throws -> Data {
-		let attributes = try fileManager.attributesOfItem(atPath: url.path)
-		guard let rawSize = attributes[.size] as? NSNumber,
-			rawSize.intValue > 0, rawSize.intValue <= maximumSize else {
+		let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+		guard descriptor >= 0 else {
+			throw WhitelistError.corruptStore("\(kind) file could not be opened safely")
+		}
+		defer { close(descriptor) }
+		var information = stat()
+		guard fstat(descriptor, &information) == 0,
+			(information.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+			information.st_size > 0, information.st_size <= off_t(maximumSize) else {
 			throw WhitelistError.corruptStore("\(kind) file size is invalid")
 		}
-		return try Data(contentsOf: url, options: [.mappedIfSafe])
+		let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+		guard let data = try handle.read(upToCount: maximumSize + 1),
+			data.count == Int(information.st_size) else {
+			throw WhitelistError.corruptStore("\(kind) file changed while being read")
+		}
+		return data
 	}
 
 	private func loadState() throws -> StoreState? {
 		let url = root.appendingPathComponent(Self.stateFileName)
-		guard fileManager.fileExists(atPath: url.path) else { return nil }
+		guard let type = try nodeType(at: url) else { return nil }
+		guard type == mode_t(S_IFREG) else {
+			throw WhitelistError.corruptStore("state path is not a regular file")
+		}
 		let data = try boundedRead(url, maximumSize: 4096, kind: "state")
 		let object: Any
 		do {
@@ -336,5 +391,16 @@ public final class ManifestStore {
 
 	private func isValidSHA256(_ value: String) -> Bool {
 		value.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+	}
+
+	private func nodeType(at url: URL) throws -> mode_t? {
+		var information = stat()
+		if lstat(url.path, &information) == 0 {
+			return information.st_mode & mode_t(S_IFMT)
+		}
+		if errno == ENOENT {
+			return nil
+		}
+		throw WhitelistError.corruptStore("could not inspect \(url.lastPathComponent)")
 	}
 }

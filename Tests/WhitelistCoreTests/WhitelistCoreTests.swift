@@ -14,6 +14,7 @@ final class WhitelistCoreTests: XCTestCase {
 
 	func testValidManifestAndSignature() throws {
 		let artifact = try makeArtifact(version: 1)
+		XCTAssertEqual(artifact.manifest.schemaVersion, 3)
 		XCTAssertEqual(artifact.manifest.manifestVersion, 1)
 		XCTAssertEqual(artifact.manifest.applicationRules.count, 1)
 		XCTAssertEqual(artifact.manifest.imageVariants.count, 2)
@@ -23,6 +24,10 @@ final class WhitelistCoreTests: XCTestCase {
 		XCTAssertNil(artifact.manifest.imageVariants[1].applicationVersion)
 		XCTAssertNil(artifact.manifest.imageVariants[1].cdhash)
 		XCTAssertEqual(artifact.manifest.imageVariants[1].searchWindow?.start, 0x650000)
+		XCTAssertEqual(artifact.manifest.imageVariants[0].matchMode, .strictVariant)
+		XCTAssertEqual(artifact.manifest.imageVariants[0].targetFileOffset, 0x650100)
+		XCTAssertNil(artifact.manifest.imageVariants[0].searchWindow)
+		XCTAssertNil(artifact.manifest.imageVariants[1].targetFileOffset)
 	}
 
 	func testProductionTrustRootFailsClosedUntilConfigured() {
@@ -150,6 +155,35 @@ final class WhitelistCoreTests: XCTestCase {
 		}
 	}
 
+	func testWrongKeyIDAndPublicKeyAreRejected() throws {
+		let manifest = try manifestData(version: 1)
+		let signature = try sign(manifest)
+		let wrongID = ManifestAuthenticator(
+			trustRoot: TrustRoot(keyID: "different-key", publicKey: publicKey)
+		)
+		XCTAssertThrowsError(try wrongID.authenticate(
+			manifestData: manifest, signatureData: signature,
+			now: now, pluginVersion: pluginVersion
+		))
+
+		let wrongKey = ManifestAuthenticator(
+			trustRoot: TrustRoot(keyID: keyID, publicKey: Data(repeating: 0xA5, count: 32))
+		)
+		XCTAssertThrowsError(try wrongKey.authenticate(
+			manifestData: manifest, signatureData: signature,
+			now: now, pluginVersion: pluginVersion
+		))
+	}
+
+	func testUnknownMatchModeAndMalformedManifestAreRejected() throws {
+		var object = manifestObject(version: 1)
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[0]["match_mode"] = "approximate_search"
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object)))
+		XCTAssertThrowsError(try authenticate(Data("not-json".utf8)))
+	}
+
 	func testExpiredManifestIsRejected() throws {
 		var object = manifestObject(version: 1)
 		object["generated_at"] = "2025-08-01T00:00:00Z"
@@ -227,6 +261,152 @@ final class WhitelistCoreTests: XCTestCase {
 				}
 			}
 		}
+	}
+
+	func testCorruptStateIsRejected() throws {
+		try withStore { store in
+			_ = try store.install(makeArtifact(version: 1), now: now)
+			try Data("not-json\n".utf8).write(
+				to: store.root.appendingPathComponent(ManifestStore.stateFileName),
+				options: [.atomic]
+			)
+			XCTAssertThrowsError(try store.status(now: now)) { error in
+				guard case WhitelistError.corruptStore = error else {
+					return XCTFail("unexpected error: \(error)")
+				}
+			}
+		}
+	}
+
+	func testStoreRejectsSymlinkedVersionsDirectory() throws {
+		let root = temporaryDirectory()
+		let destination = temporaryDirectory()
+		defer {
+			try? FileManager.default.removeItem(at: root)
+			try? FileManager.default.removeItem(at: destination)
+		}
+		try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+		try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+		try FileManager.default.createSymbolicLink(
+			at: root.appendingPathComponent(ManifestStore.versionsDirectoryName),
+			withDestinationURL: destination
+		)
+		let store = ManifestStore(root: root, authenticator: authenticator, pluginVersion: pluginVersion)
+		XCTAssertThrowsError(try store.install(makeArtifact(version: 1), now: now)) { error in
+			guard case WhitelistError.corruptStore = error else {
+				return XCTFail("unexpected error: \(error)")
+			}
+		}
+		XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), [])
+	}
+
+	func testConcurrentInstallsAreSerialized() throws {
+		let root = temporaryDirectory()
+		defer { try? FileManager.default.removeItem(at: root) }
+		let store = ManifestStore(root: root, authenticator: authenticator, pluginVersion: pluginVersion)
+		let firstEnteredCommit = DispatchSemaphore(value: 0)
+		let allowFirstCommit = DispatchSemaphore(value: 0)
+		let group = DispatchGroup()
+		let errors = ErrorCollector()
+
+		group.enter()
+		DispatchQueue.global().async {
+			defer { group.leave() }
+			do {
+				_ = try store.install(
+					self.makeArtifact(version: 1), now: self.now,
+					hooks: StoreHooks(beforeStateCommit: {
+						firstEnteredCommit.signal()
+						allowFirstCommit.wait()
+					})
+				)
+			} catch {
+				errors.append(error)
+			}
+		}
+		XCTAssertEqual(firstEnteredCommit.wait(timeout: .now() + 5), .success)
+
+		group.enter()
+		DispatchQueue.global().async {
+			defer { group.leave() }
+			do {
+				_ = try store.install(self.makeArtifact(version: 2), now: self.now)
+			} catch {
+				errors.append(error)
+			}
+		}
+		Thread.sleep(forTimeInterval: 0.1)
+		allowFirstCommit.signal()
+		XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+		XCTAssertTrue(errors.values.isEmpty, "unexpected errors: \(errors.values)")
+		XCTAssertEqual(try store.status(now: now).current.manifest.manifestVersion, 2)
+	}
+
+	func testMalformedDuplicateAndPrereleaseGitHubResponsesReject() async throws {
+		var session = mockSession { request in
+			XCTAssertTrue(request.url!.absoluteString.contains("/releases/latest"))
+			return (200, Data("{".utf8))
+		}
+		await XCTAssertThrowsAsyncError(try await GitHubReleaseClient(session: session).downloadLatest())
+
+		session.invalidateAndCancel()
+		session = mockSession { _ in
+			(200, try self.releaseData(prerelease: false, duplicateManifest: true))
+		}
+		await XCTAssertThrowsAsyncError(try await GitHubReleaseClient(session: session).downloadLatest())
+
+		session.invalidateAndCancel()
+		session = mockSession { _ in
+			(200, try self.releaseData(prerelease: true))
+		}
+		await XCTAssertThrowsAsyncError(try await GitHubReleaseClient(session: session).downloadLatest())
+		session.invalidateAndCancel()
+	}
+
+	func testPrereleaseOptInAndRequiredAssetDownloads() async throws {
+		let manifest = try manifestData(version: 1)
+		let signature = try sign(manifest)
+		let session = mockSession { request in
+			switch request.url!.path {
+				case let path where path.hasSuffix("/releases"):
+					let release = try JSONSerialization.jsonObject(
+						with: self.releaseData(prerelease: true)
+					)
+					return (200, try self.encode([release]))
+				case "/manifest": return (200, manifest)
+				case "/signature": return (200, signature)
+				default: throw URLError(.badURL)
+			}
+		}
+		let result = try await GitHubReleaseClient(session: session)
+			.downloadLatest(includePrereleases: true)
+		XCTAssertEqual(result.releaseTag, "v-test")
+		XCTAssertEqual(result.manifestData, manifest)
+		XCTAssertEqual(result.signatureData, signature)
+		session.invalidateAndCancel()
+	}
+
+	func testOversizedAndInterruptedDownloadsReject() async throws {
+		var session = mockSession { request in
+			if request.url!.path.contains("releases") {
+				return (200, try self.releaseData(prerelease: false))
+			}
+			if request.url!.path == "/manifest" {
+				return (200, Data(repeating: 0x41, count: ManifestValidator.maximumManifestSize + 1))
+			}
+			return (200, try self.sign(self.manifestData(version: 1)))
+		}
+		await XCTAssertThrowsAsyncError(try await GitHubReleaseClient(session: session).downloadLatest())
+
+		session.invalidateAndCancel()
+		session = mockSession { request in
+			if request.url!.path.contains("releases") {
+				return (200, try self.releaseData(prerelease: false))
+			}
+			throw URLError(.networkConnectionLost)
+		}
+		await XCTAssertThrowsAsyncError(try await GitHubReleaseClient(session: session).downloadLatest())
+		session.invalidateAndCancel()
 	}
 
 	private var authenticator: ManifestAuthenticator {
@@ -311,6 +491,33 @@ final class WhitelistCoreTests: XCTestCase {
 		return data
 	}
 
+	private func releaseData(prerelease: Bool, duplicateManifest: Bool = false) throws -> Data {
+		var assets: [[String: Any]] = [
+			["name": GitHubReleaseClient.manifestAssetName,
+			 "browser_download_url": "https://assets.example/manifest"],
+			["name": GitHubReleaseClient.signatureAssetName,
+			 "browser_download_url": "https://assets.example/signature"]
+		]
+		if duplicateManifest {
+			assets.append(assets[0])
+		}
+		return try encode([
+			"tag_name": "v-test",
+			"draft": false,
+			"prerelease": prerelease,
+			"assets": assets
+		])
+	}
+
+	private func mockSession(
+		_ handler: @escaping (URLRequest) throws -> (Int, Data)
+	) -> URLSession {
+		MockURLProtocol.handler = handler
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.protocolClasses = [MockURLProtocol.self]
+		return URLSession(configuration: configuration)
+	}
+
 	private func withStore(_ body: (ManifestStore) throws -> Void) throws {
 		let root = temporaryDirectory()
 		defer { try? FileManager.default.removeItem(at: root) }
@@ -324,6 +531,59 @@ final class WhitelistCoreTests: XCTestCase {
 }
 
 private struct InjectedFailure: Error {}
+
+private final class ErrorCollector: @unchecked Sendable {
+	private let lock = NSLock()
+	private var storage: [Error] = []
+
+	func append(_ error: Error) {
+		lock.lock()
+		storage.append(error)
+		lock.unlock()
+	}
+
+	var values: [Error] {
+		lock.lock()
+		defer { lock.unlock() }
+		return storage
+	}
+}
+
+private final class MockURLProtocol: URLProtocol {
+	static var handler: ((URLRequest) throws -> (Int, Data))?
+
+	override class func canInit(with request: URLRequest) -> Bool { true }
+	override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+	override func startLoading() {
+		do {
+			guard let handler = Self.handler else { throw URLError(.unknown) }
+			let (status, data) = try handler(request)
+			let response = HTTPURLResponse(
+				url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+				headerFields: ["Content-Length": String(data.count)]
+			)!
+			client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+			client?.urlProtocol(self, didLoad: data)
+			client?.urlProtocolDidFinishLoading(self)
+		} catch {
+			client?.urlProtocol(self, didFailWithError: error)
+		}
+	}
+
+	override func stopLoading() {}
+}
+
+private func XCTAssertThrowsAsyncError<T>(
+	_ expression: @autoclosure () async throws -> T,
+	file: StaticString = #filePath,
+	line: UInt = #line
+) async {
+	do {
+		_ = try await expression()
+		XCTFail("expected expression to throw", file: file, line: line)
+	} catch {}
+}
 
 private extension Data {
 	init?(hex: String) {

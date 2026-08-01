@@ -29,6 +29,11 @@ constexpr uint8_t ArbitraryChangedCdHash[20] = {
 constexpr IMKLFX::RuntimePolicyControls WindowOff {false};
 constexpr IMKLFX::RuntimePolicyControls WindowOn {true};
 
+const IMKLFX::ImageIdentity StrictIdentity {
+	"discord_krisp", "53Q6R32WPB", IMKLFX::DiscordStable00403KrispCdHash,
+	sizeof(IMKLFX::DiscordStable00403KrispCdHash), true, true, false
+};
+
 const IMKLFX::ImageIdentity ChangedIdentity {
 	"discord_krisp", "53Q6R32WPB", ArbitraryChangedCdHash,
 	sizeof(ArbitraryChangedCdHash), true, true, false
@@ -68,6 +73,18 @@ void testStrictFixtureIsRetained() {
 		&IMKLFX::MklServIntelCpuTrueOneApiBuild20201104X8664);
 	assert(IMKLFX::DiscordStable00403KrispX8664.codeDirectoryHashSize == 20);
 	assert(IMKLFX::DiscordStable00403KrispX8664.targetFileOffset == 0x650100);
+}
+
+void testStrictPolicyPrecedesWindowWhenBothApprove() {
+	const IMKLFX::ImageVariant *variants[] = {
+		&IMKLFX::DiscordStable00403KrispX8664,
+		&IMKLFX::DiscordStableKrispBoundedWindowX8664
+	};
+	const auto selection = IMKLFX::selectImageVariant(variants, 2,
+		DiscordCurrentPath, sizeof(DiscordCurrentPath) - 1,
+		0x650000, IMKLFX::X8664ValidationPageSize, StrictIdentity, WindowOn);
+	assert(selection.state == IMKLFX::VariantMatchState::Approved);
+	assert(selection.variant == &IMKLFX::DiscordStable00403KrispX8664);
 }
 
 void testChangedVersionCdHashAndOffsetUseWindow() {
@@ -116,6 +133,13 @@ void testWindowBootGateAndIdentityRejections() {
 		0x650000, IMKLFX::X8664ValidationPageSize, wrong, WindowOn);
 	assert(selection.state == IMKLFX::VariantMatchState::TeamIdentifierRejected);
 
+	wrong = ChangedIdentity;
+	wrong.runtimeSigned = false;
+	selection = IMKLFX::selectImageVariant(window, 1,
+		DiscordChangedVersionPath, sizeof(DiscordChangedVersionPath) - 1,
+		0x650000, IMKLFX::X8664ValidationPageSize, wrong, WindowOn);
+	assert(selection.state == IMKLFX::VariantMatchState::SigningPolicyRejected);
+
 	selection = IMKLFX::selectImageVariant(window, 1,
 		NonWhitelistedPath, sizeof(NonWhitelistedPath) - 1,
 		0x650000, IMKLFX::X8664ValidationPageSize, ChangedIdentity, WindowOn);
@@ -143,6 +167,7 @@ void testTargetOutsideWindowAndNonWhitelistBytesReject() {
 int main() {
 	testDiscordPathGrammar();
 	testStrictFixtureIsRetained();
+	testStrictPolicyPrecedesWindowWhenBothApprove();
 	testChangedVersionCdHashAndOffsetUseWindow();
 	testWindowBootGateAndIdentityRejections();
 	testTargetOutsideWindowAndNonWhitelistBytesReject();

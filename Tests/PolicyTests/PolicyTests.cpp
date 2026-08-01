@@ -159,6 +159,23 @@ void testStrictModeRemainsExactAndNeverSearches() {
 	selection = IMKLFX::selectPolicyPatch(buffer, sizeof(buffer), 0,
 		FixtureStrictVariant, WindowOn);
 	assert(selection.state == IMKLFX::TargetState::Mismatch);
+
+	memset(buffer, 0, sizeof(buffer));
+	putSupportedFunction(buffer, sizeof(buffer), FixtureStrictVariant.targetFileOffset);
+	buffer[FixtureStrictVariant.targetFileOffset] ^= 1;
+	assert(IMKLFX::selectStrictPatch(buffer, sizeof(buffer), 0,
+		FixtureStrictVariant).state == IMKLFX::TargetState::Mismatch);
+
+	buffer[FixtureStrictVariant.targetFileOffset] ^= 1;
+	memcpy(buffer + FixtureStrictVariant.targetFileOffset, FixturePatch.replacement,
+		FixturePatch.replacementSize);
+	assert(IMKLFX::selectStrictPatch(buffer, sizeof(buffer), 0,
+		FixtureStrictVariant).state == IMKLFX::TargetState::AlreadyPatched);
+
+	const IMKLFX::ImageVariant *variants[] = {&FixtureStrictVariant};
+	assert(IMKLFX::selectImageVariant(variants, 1, FixturePath,
+		sizeof(FixturePath) - 1, 128, 128, FixtureIdentity, WindowOn).state ==
+		IMKLFX::VariantMatchState::NotCandidate);
 }
 
 void testWindowZeroUniqueTwoAndMany() {
@@ -193,6 +210,9 @@ void testWindowBoundaryPositionsAndTruncation() {
 	putSupportedFunction(buffer, sizeof(buffer), last);
 	assert(search(buffer, sizeof(buffer)).targetFileOffset == last);
 	assert(search(buffer, sizeof(buffer) - 1).state == IMKLFX::TargetState::NotCovered);
+	for (size_t size = 0; size < sizeof(buffer); size++) {
+		assert(search(buffer, size).state == IMKLFX::TargetState::NotCovered);
+	}
 	assert(search(nullptr, sizeof(buffer)).state == IMKLFX::TargetState::InvalidPolicy);
 	assert(search(buffer, 0).state == IMKLFX::TargetState::NotCovered);
 
@@ -276,6 +296,20 @@ void testAlreadyPartialUnknownAndReplacementBounds() {
 		IMKLFX::TargetState::Mismatch);
 }
 
+void testMultipleDefinitionsAtOnePositionAreAmbiguous() {
+	uint8_t buffer[IMKLFX::X8664ValidationPageSize] {};
+	putSupportedFunction(buffer, sizeof(buffer), 128);
+	auto duplicatePatch = FixturePatch;
+	duplicatePatch.identifier = "fixture-mkl-implementation-x86_64-v2";
+	const IMKLFX::PatchDefinition *allowed[] = {&FixturePatch, &duplicatePatch};
+	auto variant = FixtureWindowVariant;
+	variant.allowedPatches = allowed;
+	variant.allowedPatchCount = 2;
+	const auto selection = search(buffer, sizeof(buffer), variant);
+	assert(selection.state == IMKLFX::TargetState::Ambiguous);
+	assert(selection.matchCount == 2);
+}
+
 void testWindowPolicyBoundsAndGate() {
 	uint8_t buffer[IMKLFX::X8664ValidationPageSize] {};
 	putSupportedFunction(buffer, sizeof(buffer), 128);
@@ -289,6 +323,11 @@ void testWindowPolicyBoundsAndGate() {
 	selection = IMKLFX::selectImageVariant(variants, 1, FixturePath,
 		sizeof(FixturePath) - 1, 0, sizeof(buffer), FixtureIdentity, WindowOn);
 	assert(selection.state == IMKLFX::VariantMatchState::Approved);
+	auto invalidSigning = FixtureIdentity;
+	invalidSigning.codeValid = false;
+	selection = IMKLFX::selectImageVariant(variants, 1, FixturePath,
+		sizeof(FixturePath) - 1, 0, sizeof(buffer), invalidSigning, WindowOn);
+	assert(selection.state == IMKLFX::VariantMatchState::SigningPolicyRejected);
 
 	auto outside = FixtureWindowVariant;
 	outside.searchWindowStart = IMKLFX::X8664ValidationPageSize;
@@ -306,6 +345,10 @@ void testWindowPolicyBoundsAndGate() {
 		UINT64_MAX - 1, UINT64_MAX));
 	assert(!IMKLFX::callbackRangeContainsWindow(UINT64_MAX - 2, 1,
 		UINT64_MAX - 1, UINT64_MAX));
+	size_t checked = 0;
+	assert(IMKLFX::checkedAddSize(SIZE_MAX - 1, 1, checked));
+	assert(checked == SIZE_MAX);
+	assert(!IMKLFX::checkedAddSize(SIZE_MAX, 1, checked));
 }
 
 void testSecondApplicationReusesPatchWithoutEngineChanges() {
@@ -332,6 +375,7 @@ int main() {
 	testCrossWindowAndCrossPageCandidatesReject();
 	testEveryByteAndContextMutationFails();
 	testAlreadyPartialUnknownAndReplacementBounds();
+	testMultipleDefinitionsAtOnePositionAreAmbiguous();
 	testWindowPolicyBoundsAndGate();
 	testSecondApplicationReusesPatchWithoutEngineChanges();
 	return 0;
