@@ -15,9 +15,10 @@ final class WhitelistCoreTests: XCTestCase {
 	func testValidManifestAndSignature() throws {
 		let artifact = try makeArtifact(version: 1)
 		XCTAssertEqual(artifact.manifest.manifestVersion, 1)
-		XCTAssertEqual(artifact.manifest.rules.count, 1)
-		XCTAssertEqual(artifact.manifest.rules[0].patchDefinitionID,
-			"mkl-serv-intel-cpu-true-x86_64-discord-v1")
+		XCTAssertEqual(artifact.manifest.applicationRules.count, 1)
+		XCTAssertEqual(artifact.manifest.imageVariants.count, 1)
+		XCTAssertEqual(artifact.manifest.imageVariants[0].allowedPatchDefinitionIDs,
+			["mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"])
 	}
 
 	func testProductionTrustRootFailsClosedUntilConfigured() {
@@ -56,14 +57,35 @@ final class WhitelistCoreTests: XCTestCase {
 		}
 	}
 
-	func testRemoteMachineCodeAndOffsetsCannotEnterSchema() throws {
+	func testRemoteMachineCodeCannotEnterSchema() throws {
 		var object = manifestObject(version: 1)
-		var rules = object["rules"] as! [[String: Any]]
-		rules[0]["replacement_bytes"] = "b801000000c3"
-		rules[0]["target_file_offset"] = 0x650100
-		object["rules"] = rules
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[0]["replacement_bytes"] = "b801000000c3"
+		object["image_variants"] = variants
 		let data = try encode(object)
 		XCTAssertThrowsError(try authenticate(data))
+	}
+
+	func testReviewedSearchModeIsRejectedWhileCompiledDisabled() throws {
+		var object = manifestObject(version: 1)
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[0]["match_mode"] = "reviewed_search"
+		variants[0]["target_file_offset"] = NSNull()
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object))) { error in
+			guard case WhitelistError.invalidManifest(let reason) = error,
+				reason.contains("reviewed_search is compiled disabled") else {
+				return XCTFail("unexpected error: \(error)")
+			}
+		}
+	}
+
+	func testImageVariantMustReferenceAnApplicationRule() throws {
+		var object = manifestObject(version: 1)
+		var variants = object["image_variants"] as! [[String: Any]]
+		variants[0]["application_rule_id"] = "unapproved-application"
+		object["image_variants"] = variants
+		XCTAssertThrowsError(try authenticate(try encode(object)))
 	}
 
 	func testTamperedManifestFailsSignatureBeforeSchemaAcceptance() throws {
@@ -208,7 +230,7 @@ final class WhitelistCoreTests: XCTestCase {
 
 	private func manifestObject(version: Int, applicationVersion: String = "0.0.403") -> [String: Any] {
 		[
-			"schema_version": 1,
+			"schema_version": 2,
 			"manifest_version": version,
 			"generated_at": "2026-07-30T00:00:00Z",
 			"expires_at": "2027-07-30T00:00:00Z",
@@ -216,17 +238,29 @@ final class WhitelistCoreTests: XCTestCase {
 				"minimum": "1.0.0",
 				"maximum": "1.0.0"
 			],
-			"rules": [[
-				"id": "discord-stable-\(applicationVersion)-krisp-x86_64-test",
+			"application_rules": [[
+				"id": "discord-stable-krisp",
 				"application_family": "discord-stable-krisp",
+				"display_name": "Discord Stable Krisp native module",
+				"path_rule_id": "discord-stable-krisp-path-v1",
+				"basename": "discord_krisp.node",
+				"signing_identifier": "discord_krisp",
+				"team_identifier_policy": "exact",
+				"team_identifier": "53Q6R32WPB",
+				"signing_policy_id": "valid-runtime-no-adhoc-v1"
+			]],
+			"image_variants": [[
+				"id": "discord-stable-\(applicationVersion)-krisp-x86_64-test",
+				"application_rule_id": "discord-stable-krisp",
 				"application_version": applicationVersion,
 				"architecture": "x86_64",
-				"path_rule_id": "discord-stable-krisp-path-v1",
-				"target_profile_id": "discord-krisp-x86_64-offset-650100-v1",
-				"patch_definition_id": "mkl-serv-intel-cpu-true-x86_64-discord-v1",
-				"signing_identifier": "discord_krisp",
-				"team_identifier": "53Q6R32WPB",
-				"cdhash": "585e9575a870db3f7de0e9d3c74fc9d7e7f084cd"
+				"cdhash": "585e9575a870db3f7de0e9d3c74fc9d7e7f084cd",
+				"match_mode": "strict_variant",
+				"target_file_offset": 0x650100,
+				"executable_range": ["start": 0x4D00, "end": 0xCBCED0],
+				"allowed_patch_definition_ids": [
+					"mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
+				]
 			]]
 		]
 	}

@@ -28,7 +28,9 @@ struct WhitelistUpdaterCommand {
 				}
 				let data = try Data(contentsOf: URL(fileURLWithPath: manifestPath))
 				let manifest = try ManifestValidator().validate(data, pluginVersion: pluginVersion)
-				print("valid manifest version \(manifest.manifestVersion) with \(manifest.rules.count) rule(s)")
+				print("valid manifest version \(manifest.manifestVersion) with " +
+					"\(manifest.applicationRules.count) application rule(s) and " +
+					"\(manifest.imageVariants.count) image variant(s)")
 
 			case "update", "check":
 				let checkOnly = command == "check" || options.checkOnly
@@ -123,24 +125,16 @@ struct WhitelistUpdaterCommand {
 		print("added rules: \(difference.added.isEmpty ? "none" : difference.added.joined(separator: ", "))")
 		print("removed rules: \(difference.removed.isEmpty ? "none" : difference.removed.joined(separator: ", "))")
 		print("changed rules: \(difference.changed.isEmpty ? "none" : difference.changed.joined(separator: ", "))")
-		for rule in difference.addedRules {
-			print("+ \(describe(rule))")
+		for record in difference.addedRecords {
+			print("+ \(record)")
 		}
-		for rule in difference.removedRules {
-			print("- \(describe(rule))")
+		for record in difference.removedRecords {
+			print("- \(record)")
 		}
-		for change in difference.changedRules {
-			print("- \(describe(change.oldRule))")
-			print("+ \(describe(change.newRule))")
+		for change in difference.changedRecords {
+			print("- \(change.oldRecord)")
+			print("+ \(change.newRecord)")
 		}
-	}
-
-	static func describe(_ rule: ManifestRule) -> String {
-		let team = rule.teamIdentifier ?? "null"
-		return "\(rule.id) {family=\(rule.applicationFamily), version=\(rule.applicationVersion), " +
-			"architecture=\(rule.architecture), path_rule=\(rule.pathRuleID), " +
-			"target_profile=\(rule.targetProfileID), patch_definition=\(rule.patchDefinitionID), " +
-			"signing_id=\(rule.signingIdentifier), team_id=\(team), cdhash=\(rule.cdhash)}"
 	}
 
 	static let usage = """

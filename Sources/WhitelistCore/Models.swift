@@ -80,17 +80,43 @@ public struct SemanticVersion: Comparable, Equatable, CustomStringConvertible {
 	}
 }
 
-public struct ManifestRule: Equatable {
+public enum ManifestTeamIdentifierPolicy: String, Equatable {
+	case exact
+	case absent
+}
+
+public enum ManifestMatchMode: String, Equatable {
+	case strictVariant = "strict_variant"
+	case reviewedSearch = "reviewed_search"
+}
+
+public struct ManifestApplicationRule: Equatable {
 	public let id: String
 	public let applicationFamily: String
-	public let architecture: String
+	public let displayName: String
 	public let pathRuleID: String
-	public let targetProfileID: String
-	public let patchDefinitionID: String
+	public let basename: String
 	public let signingIdentifier: String
+	public let teamIdentifierPolicy: ManifestTeamIdentifierPolicy
 	public let teamIdentifier: String?
-	public let cdhash: String
+	public let signingPolicyID: String
+}
+
+public struct ManifestExecutableRange: Equatable {
+	public let start: UInt64
+	public let end: UInt64
+}
+
+public struct ManifestImageVariant: Equatable {
+	public let id: String
+	public let applicationRuleID: String
 	public let applicationVersion: String
+	public let architecture: String
+	public let cdhash: String
+	public let matchMode: ManifestMatchMode
+	public let targetFileOffset: UInt64?
+	public let executableRange: ManifestExecutableRange
+	public let allowedPatchDefinitionIDs: [String]
 }
 
 public struct WhitelistManifest: Equatable {
@@ -100,7 +126,8 @@ public struct WhitelistManifest: Equatable {
 	public let expiresAt: Date
 	public let minimumPluginVersion: SemanticVersion
 	public let maximumPluginVersion: SemanticVersion
-	public let rules: [ManifestRule]
+	public let applicationRules: [ManifestApplicationRule]
+	public let imageVariants: [ManifestImageVariant]
 }
 
 public struct SignedManifestArtifact {
@@ -123,13 +150,13 @@ public struct ManifestDifference: Equatable {
 	public let added: [String]
 	public let removed: [String]
 	public let changed: [String]
-	public let addedRules: [ManifestRule]
-	public let removedRules: [ManifestRule]
-	public let changedRules: [RuleChange]
+	public let addedRecords: [String]
+	public let removedRecords: [String]
+	public let changedRecords: [RecordChange]
 
 	public static func compare(_ old: WhitelistManifest?, _ new: WhitelistManifest) -> ManifestDifference {
-		let oldRules = Dictionary(uniqueKeysWithValues: (old?.rules ?? []).map { ($0.id, $0) })
-		let newRules = Dictionary(uniqueKeysWithValues: new.rules.map { ($0.id, $0) })
+		let oldRules = recordMap(old)
+		let newRules = recordMap(new)
 		let oldIDs = Set(oldRules.keys)
 		let newIDs = Set(newRules.keys)
 		let added = newIDs.subtracting(oldIDs).sorted()
@@ -141,20 +168,42 @@ public struct ManifestDifference: Equatable {
 			added: added,
 			removed: removed,
 			changed: changed,
-			addedRules: added.compactMap { newRules[$0] },
-			removedRules: removed.compactMap { oldRules[$0] },
-			changedRules: changed.compactMap { id in
+			addedRecords: added.compactMap { newRules[$0] },
+			removedRecords: removed.compactMap { oldRules[$0] },
+			changedRecords: changed.compactMap { id in
 				guard let oldRule = oldRules[id], let newRule = newRules[id] else { return nil }
-				return RuleChange(id: id, oldRule: oldRule, newRule: newRule)
+				return RecordChange(id: id, oldRecord: oldRule, newRecord: newRule)
 			}
 		)
 	}
+
+	private static func recordMap(_ manifest: WhitelistManifest?) -> [String: String] {
+		guard let manifest else { return [:] }
+		var records: [String: String] = [:]
+		for rule in manifest.applicationRules {
+			let key = "application_rule:\(rule.id)"
+			records[key] = "\(key) {family=\(rule.applicationFamily), name=\(rule.displayName), " +
+				"path_rule=\(rule.pathRuleID), basename=\(rule.basename), " +
+				"signing_id=\(rule.signingIdentifier), team_policy=\(rule.teamIdentifierPolicy.rawValue), " +
+				"team_id=\(rule.teamIdentifier ?? "null"), signing_policy=\(rule.signingPolicyID)}"
+		}
+		for variant in manifest.imageVariants {
+			let key = "image_variant:\(variant.id)"
+			let offset = variant.targetFileOffset.map(String.init) ?? "null"
+			records[key] = "\(key) {application_rule=\(variant.applicationRuleID), " +
+				"version=\(variant.applicationVersion), architecture=\(variant.architecture), " +
+				"cdhash=\(variant.cdhash), mode=\(variant.matchMode.rawValue), " +
+				"target_offset=\(offset), executable_range=\(variant.executableRange.start)..<" +
+				"\(variant.executableRange.end), patches=\(variant.allowedPatchDefinitionIDs.joined(separator: ","))}"
+		}
+		return records
+	}
 }
 
-public struct RuleChange: Equatable {
+public struct RecordChange: Equatable {
 	public let id: String
-	public let oldRule: ManifestRule
-	public let newRule: ManifestRule
+	public let oldRecord: String
+	public let newRecord: String
 }
 
 public struct InstallReport {

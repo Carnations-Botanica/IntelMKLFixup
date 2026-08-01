@@ -3,6 +3,81 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "application_rules": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "application_family": {
+            "maxLength": 96,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$",
+            "type": "string"
+          },
+          "basename": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$",
+            "type": "string"
+          },
+          "display_name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 96,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$",
+            "type": "string"
+          },
+          "path_rule_id": {
+            "enum": [
+              "discord-stable-krisp-path-v1"
+            ]
+          },
+          "signing_identifier": {
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "type": "string"
+          },
+          "signing_policy_id": {
+            "enum": [
+              "valid-runtime-no-adhoc-v1"
+            ]
+          },
+          "team_identifier": {
+            "oneOf": [
+              {
+                "pattern": "^[A-Z0-9]{10}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "team_identifier_policy": {
+            "enum": [
+              "exact",
+              "absent"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "application_family",
+          "display_name",
+          "path_rule_id",
+          "basename",
+          "signing_identifier",
+          "team_identifier_policy",
+          "team_identifier",
+          "signing_policy_id"
+        ],
+        "type": "object"
+      },
+      "maxItems": 128,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
     "expires_at": {
       "format": "date-time",
       "maxLength": 40,
@@ -12,6 +87,136 @@
       "format": "date-time",
       "maxLength": 40,
       "type": "string"
+    },
+    "image_variants": {
+      "items": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "match_mode": {
+                  "const": "strict_variant"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "target_file_offset": {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "match_mode": {
+                  "const": "reviewed_search"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "target_file_offset": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "allowed_patch_definition_ids": {
+            "items": {
+              "enum": [
+                "mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1"
+              ]
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "application_rule_id": {
+            "maxLength": 96,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$",
+            "type": "string"
+          },
+          "application_version": {
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$",
+            "type": "string"
+          },
+          "architecture": {
+            "const": "x86_64"
+          },
+          "cdhash": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "executable_range": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start": {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start",
+              "end"
+            ],
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 96,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$",
+            "type": "string"
+          },
+          "match_mode": {
+            "enum": [
+              "strict_variant",
+              "reviewed_search"
+            ]
+          },
+          "target_file_offset": {
+            "oneOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "application_rule_id",
+          "application_version",
+          "architecture",
+          "cdhash",
+          "match_mode",
+          "target_file_offset",
+          "executable_range",
+          "allowed_patch_definition_ids"
+        ],
+        "type": "object"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
     },
     "manifest_version": {
       "minimum": 1,
@@ -35,85 +240,8 @@
       ],
       "type": "object"
     },
-    "rules": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "application_family": {
-            "enum": [
-              "discord-stable-krisp"
-            ]
-          },
-          "application_version": {
-            "maxLength": 32,
-            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
-            "type": "string"
-          },
-          "architecture": {
-            "const": "x86_64"
-          },
-          "cdhash": {
-            "pattern": "^[0-9a-f]{40}$",
-            "type": "string"
-          },
-          "id": {
-            "maxLength": 96,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,95}$",
-            "type": "string"
-          },
-          "patch_definition_id": {
-            "enum": [
-              "mkl-serv-intel-cpu-true-x86_64-discord-v1"
-            ]
-          },
-          "path_rule_id": {
-            "enum": [
-              "discord-stable-krisp-path-v1"
-            ]
-          },
-          "signing_identifier": {
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9._-]{1,128}$",
-            "type": "string"
-          },
-          "target_profile_id": {
-            "enum": [
-              "discord-krisp-x86_64-offset-650100-v1"
-            ]
-          },
-          "team_identifier": {
-            "oneOf": [
-              {
-                "pattern": "^[A-Z0-9]{10}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "application_family",
-          "application_version",
-          "architecture",
-          "path_rule_id",
-          "target_profile_id",
-          "patch_definition_id",
-          "signing_identifier",
-          "team_identifier",
-          "cdhash"
-        ],
-        "type": "object"
-      },
-      "maxItems": 128,
-      "minItems": 1,
-      "type": "array",
-      "uniqueItems": true
-    },
     "schema_version": {
-      "const": 1
+      "const": 2
     }
   },
   "required": [
@@ -122,9 +250,9 @@
     "generated_at",
     "expires_at",
     "plugin_compatibility",
-    "rules"
+    "application_rules",
+    "image_variants"
   ],
-  "title": "IntelMKLFixup application identity whitelist",
+  "title": "IntelMKLFixup layered application policy",
   "type": "object"
 }
-
