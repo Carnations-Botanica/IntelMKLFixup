@@ -4,5 +4,7 @@ Lilu.kext
 xcuserdata
 project.xcworkspace
 build
+.build
 xcshareddata
 /MacKernelSDK
+/.dependencies

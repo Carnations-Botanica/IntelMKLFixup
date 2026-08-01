@@ -1,0 +1,36 @@
+{
+  "$id": "https://github.com/Carnations-Botanica/IntelMKLFixup/blob/main/whitelist/signature.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "algorithm": {
+      "const": "ed25519"
+    },
+    "format_version": {
+      "const": 1
+    },
+    "key_id": {
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "type": "string"
+    },
+    "manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "signature": {
+      "maxLength": 128,
+      "type": "string"
+    }
+  },
+  "required": [
+    "format_version",
+    "algorithm",
+    "key_id",
+    "manifest_sha256",
+    "signature"
+  ],
+  "title": "IntelMKLFixup detached Ed25519 signature envelope",
+  "type": "object"
+}
+

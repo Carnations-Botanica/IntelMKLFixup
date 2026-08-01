@@ -1,0 +1,25 @@
+{
+  "expires_at": "2027-07-31T00:00:00Z",
+  "generated_at": "2026-08-01T00:00:00Z",
+  "manifest_version": 1,
+  "plugin_compatibility": {
+    "maximum": "1.0.0",
+    "minimum": "1.0.0"
+  },
+  "rules": [
+    {
+      "application_family": "discord-stable-krisp",
+      "application_version": "0.0.403",
+      "architecture": "x86_64",
+      "cdhash": "585e9575a870db3f7de0e9d3c74fc9d7e7f084cd",
+      "id": "discord-stable-0.0.403-krisp-x86_64-585e9575",
+      "patch_definition_id": "mkl-serv-intel-cpu-true-x86_64-discord-v1",
+      "path_rule_id": "discord-stable-krisp-path-v1",
+      "signing_identifier": "discord_krisp",
+      "target_profile_id": "discord-krisp-x86_64-offset-650100-v1",
+      "team_identifier": "53Q6R32WPB"
+    }
+  ],
+  "schema_version": 1
+}
+
