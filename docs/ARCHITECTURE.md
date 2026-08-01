@@ -2,123 +2,132 @@
 
 ## Purpose
 
-IntelMKLFixup is an x86_64 AMD Hackintosh Lilu plugin that changes only a
-reviewed Intel MKL CPU-vendor predicate. A supported
-`_mkl_serv_intel_cpu_true` implementation is replaced in validated executable
-memory with `mov eax, 1; ret`. Numerical MKL entry points are not redirected or
-replaced.
+IntelMKLFixup is an x86_64 AMD Hackintosh Lilu plugin that changes only named,
+reviewed implementations of Intel MKL's `_mkl_serv_intel_cpu_true` predicate.
+The supported implementation is replaced in validated executable memory with
+`mov eax, 1; ret`. Numerical MKL functions are not redirected or replaced.
 
-Discord is the first strict policy fixture, not a core-engine dependency.
+Discord Stable/Krisp is the first application policy, not a dependency of the
+patch engine.
 
-## Components
+## Policy layers
 
-### Lilu/XNU integration
+The allocation-free core in `IntelMKLFixupPolicy.hpp` has three independent
+layers:
 
-`IntelMKLFixup.cpp` performs startup gating, resolves the required Darwin 24
-code-signing symbols, routes `_cs_validate_page`, invokes the original function
-first, converts XNU code-blob evidence into a generic `ImageIdentity`, and logs
-bounded outcomes.
+1. `ApplicationRule` approves a bounded module path, basename, signing
+   identifier, Team ID policy, and code-signing policy.
+2. `PatchDefinition` describes an exact reviewed MKL implementation, exact
+   context, architecture, and replacement. It contains no application names.
+3. `ImageVariant` associates an application rule with allowed compiled patch
+   definitions and either strict binary evidence or one bounded search window.
 
-It knows only the built-in catalogue arrays and generic selector APIs. It does
-not call a Discord matcher, hold a Discord variant directly, scan a process,
-parse manifests, access the network, or read policy files.
+`IntelMKLFixupCatalogue.hpp` supplies the compiled data. The callback consumes
+only generic catalogue arrays and selectors; it does not name Discord.
 
-### Policy engine
+## Darwin 24 callback boundary
 
-`IntelMKLFixupPolicy.hpp` is allocation-free and independent of Lilu/kernel
-headers. It defines:
+The plugin routes `_cs_validate_page` only. The original function is invoked
+exactly once before IntelMKLFixup examines the result. On x86_64, the callback
+provides a vnode, a 4 KiB page offset, a pointer to that page, and validation,
+taint, and NX bitmaps. It does not provide a complete Mach-O image or a signal
+that all executable pages have been observed.
 
-- `ApplicationRule`: approved path/basename/signing family;
-- `PatchDefinition`: exact MKL implementation and replacement;
-- `ImageVariant`: binary evidence and the allowed association between them;
-- generic variant selection and strict patch selection.
-
-The pure header is compiled directly by host tests. It contains no Discord
-identifiers or path grammar.
-
-### Reviewed catalogue
-
-`IntelMKLFixupCatalogue.hpp` supplies the reviewed, compiled data consumed by
-the engine: MKL-oriented `PatchDefinition` objects, application-rule
-implementations, and their `ImageVariant` associations. Application-specific
-path grammars are bounded rule implementations behind function pointers, so a
-new consumer does not alter the callback or matching engine.
-
-### Userspace policy tools
-
-The Swift package verifies detached Ed25519 signatures, validates schema
-version 2, downloads stable GitHub Release assets to temporary files, stages
-authenticated policy atomically, rejects replay/downgrade conditions, and
-supports rollback.
-
-It has no kernel privileges and its installed store is not consumed by the
-current kext. It cannot change runtime eligibility.
+The callback never reads another page, opens the vnode, parses a Mach-O image,
+or retains the callback data pointer. Both runtime modes decline candidates
+whose complete function and context are not present in the supplied page.
 
 ## Runtime flow
 
 ```text
-kext startup
-  → require x86_64 + AMD + Darwin 24
-  → resolve every required XNU symbol
+startup
+  → require x86_64, AMD, and Darwin 24
+  → resolve all required XNU code-signing symbols
   → route _cs_validate_page or remain inactive
 
 validation callback
   → invoke original _cs_validate_page exactly once
-  → bounded catalogue offset prefilter
+  → bounded catalogue page prefilter
   → obtain regular-vnode path
-  → match generic ApplicationRule
-  → require XNU validated + untainted + executable result
-  → obtain code blob for vnode/offset
-  → select exactly one ImageVariant from signing evidence + CDHash
-  → select exactly one allowed compiled PatchDefinition at strict offset
-  → dry-run, already-patched skip, or guarded six-byte write
-  → reclassify bytes and log the outcome
+  → match a compiled ApplicationRule
+  → require XNU validated, untainted, executable result
+  → obtain signing identifier, Team ID, flags, and CDHash
+  → approve exactly one ImageVariant
+  → run only that variant's explicit match mode
+  → dry-run, reject, recognise already-patched bytes, or perform guarded write
+  → revalidate and report the outcome
 ```
 
-Every failure returns to the original validation flow without a deliberate
-panic. No match is a normal result.
+No application mismatch or missing MKL implementation causes a deliberate
+panic.
 
-## Strict variant guarantees
+## StrictVariant
 
-Strict mode performs no byte search. The callback is considered only if it
-contains a reviewed target file offset. Complete function bytes and context
-must fit in that callback range and inside reviewed executable bounds. The
-engine declines cross-range signatures and rejects multiple allowed definitions
-that match the same target.
+StrictVariant is the default and remains the first controlled-test mode. It
+requires the configured CDHash, reviewed target file offset, executable range,
+and one exact allowed patch definition with complete context. It performs no
+search and never falls back to BoundedWindow.
 
-The original bytes are rechecked after enabling kernel writing. Only the
-compiled replacement length is copied, and the resulting already-patched form
-is verified before write protection is restored.
+The Discord 0.0.403 strict fixture remains unchanged apart from additive
+structure fields used by the generic policy model.
 
-## Reviewed search state
+## BoundedWindow
 
-Reviewed search is a named match mode but is compiled disabled. There is no
-search loop in the callback and no boot argument that enables one. Enabling it
-requires separate approval after complete pure host tests and callback-range
-review.
+BoundedWindow is experimental and additionally requires `-imklfxwindow`.
+Without that boot argument, its application identity may be recognised but no
+search or patch is performed.
 
-## Policy sources
+Its exact guarantee is:
 
-The runtime policy source is currently the catalogue compiled into the kext.
-The signed userspace manifest mirrors and stages application/image policy but
-does not affect the running plugin. Consequently, adding any application today
-requires both a new signed manifest and a reviewed kext release.
+- one policy-declared window whose start is 4 KiB aligned;
+- a non-empty window no larger than one x86_64 validation page;
+- one callback must contain the complete window;
+- application path and signing identity are approved before searching;
+- only the variant's compiled PatchDefinitions are considered;
+- exact function bytes and complete before/after context are required;
+- zero matches in the window reject;
+- exactly one complete original or already-patched match accepts;
+- more than one match in the window rejects; and
+- no statement is made about bytes elsewhere in the image.
 
-The preferred future direction is a compact, signed, fixed-capacity boot policy
-verified and frozen before route installation. It is intentionally not
-implemented until a real OpenCore-to-kernel transport and its APIs, bounds,
-authentication, and fallback semantics are independently verified. JSON and
-networking will remain outside the kernel.
+The matcher performs at most 4096 candidate-position checks for each of at most
+eight compiled patch definitions. It allocates nothing and stops as soon as a
+second match proves ambiguity. Cross-window and cross-page candidates are
+rejected.
 
-## Current application-specific code
+Version and CDHash may be omitted from a BoundedWindow policy. This permits an
+application update only when its path/signing rule still passes and the exact
+reviewed MKL implementation remains uniquely inside the same approved window.
+Movement to another page requires reviewed policy changes.
 
-Only these elements of `IntelMKLFixupCatalogue.hpp` are Discord-specific:
+## Future ImageScan
 
-- `matchDiscordStableKrispPath`;
-- `DiscordStableKrispApplication`;
-- the Discord 0.0.403 CDHash and `ImageVariant`;
-- its allowed-patch association and consumer notes; and
-- Discord-focused testing/documentation procedures.
+ImageScan is reserved for a future userspace-assisted design. It is not a
+kernel runtime mode, has no boot argument, and is rejected by the current
+manifest validator. Its intended purpose is complete executable-section
+inspection in userspace followed by an authenticated, binary-bound policy.
+See `docs/USERSPACE_PRESCAN_DESIGN.md`.
 
-The MKL bytes, replacement, validation routines, catalogue selectors, callback,
-write path, and userspace signature/store machinery are application-independent.
+## Patch write path
+
+After a unique selection, the engine acquires Lilu's kernel write lock, enables
+kernel writing, repeats the same strict or bounded selection, and requires the
+same patch pointer and file offset. It writes only the compiled replacement
+length and verifies the already-patched form before restoring protection.
+
+The replacement itself is the idempotence marker: subsequent callbacks detect
+the complete reviewed replacement plus untouched original tail and do not
+write again. Dry-run returns before changing write protection.
+
+## Policy source
+
+Runtime policy is currently compiled into the kext. The signed userspace
+manifest mirrors policy for authentication, review, update, and future
+transport work, but the running kext does not consume the installed store.
+Installing a manifest therefore has no runtime effect.
+
+A Discord update can be tolerated by the compiled BoundedWindow rule without a
+new kext only when the function remains in its existing page. Moving the
+function to another page, adding a new application/path grammar, or supporting
+a new MKL implementation requires a reviewed catalogue change and kext
+release.

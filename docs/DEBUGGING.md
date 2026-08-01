@@ -15,13 +15,21 @@ arguments already required by the system.
 |---|---|
 | `-imklfxoff` | Completely prevents Lilu from starting this plugin. A reboot is required. |
 | `-imklfxdbg` | Enables verbose IntelMKLFixup candidate diagnostics. Usernames are redacted from paths. It does not enable patching by itself. |
-| `-imklfxdryrun` | Performs the same OS, CPU, page-validation, path, signing-identity, CDHash, offset, signature, and context checks, but returns before acquiring the write lock or modifying memory. |
+| `-imklfxdryrun` | Performs the same OS, CPU, page-validation, path, signing-identity, configured CDHash/offset or bounded-window, signature, and context checks, but returns before acquiring the write lock or modifying memory. |
+| `-imklfxwindow` | Experimentally enables compiled BoundedWindow policies. It does not enable broad or image-wide scanning. Without it, BoundedWindow policies fail closed. |
 | `-imklfxbuiltin` | Explicitly pins policy to the whitelist compiled into this kext. This is already the only policy source in the current version; the flag records that the choice was deliberate. |
 
 The recommended first-test set is:
 
 ```text
 -imklfxdryrun -imklfxdbg -imklfxbuiltin
+```
+
+That set exercises StrictVariant only. After the strict fixture has passed and
+BoundedWindow testing is explicitly approved, use:
+
+```text
+-imklfxwindow -imklfxdryrun -imklfxdbg -imklfxbuiltin
 ```
 
 If `-imklfxoff` is present, the other IntelMKLFixup arguments have no effect
@@ -42,8 +50,9 @@ states are distinct:
 |---|---|---|
 | Plugin loaded | `lifecycle=loaded` | Lilu accepted the plugin configuration and ran its startup callback. This does not mean the kernel route was installed. |
 | Route installed | `lifecycle=route-installed darwin=24 cpu=amd` | All required symbols resolved and `_cs_validate_page` was routed. This does not mean Discord was seen. |
-| Candidate identified | `candidate=discord-stable-krisp` | The reviewed target page belongs to a file matching the strict Discord Stable module path. It may still be rejected. |
-| Image approved | `identity=approved` | In verbose mode, the exact signing identity, Team ID, and CDHash matched a compiled image variant. |
+| Candidate identified | `event=candidate-app-approved` | The current callback range can contain a compiled policy target and the module passed the applicable path and signing gates. It may still be rejected. |
+| Window search started | `event=search-started mode=bounded-window` | The complete approved one-page window is present and its experimental boot gate is enabled. This is not an image-wide search. |
+| Window search disabled | `outcome=search-mode-disabled` | A matching BoundedWindow policy exists, but `-imklfxwindow` is absent. No search or write occurs. |
 | Signature found in dry run | `signature=supported outcome=dry-run modified=no` | Both image approval and the exact compiled MKL signature/context succeeded. No write was attempted. |
 | Patch completed | `signature=supported outcome=patched modified=yes` | The replacement was written and verified in memory. This does not prove Discord functionality. |
 | Skipped | `outcome=skipped` | The target was already patched during the checked callback. |
@@ -51,8 +60,8 @@ states are distinct:
 | Error | `outcome=error reason=...` | A write-protection or post-write verification operation failed. Stop testing and use the recovery procedure. |
 
 No message is emitted for ordinary validation callbacks, unrelated paths, or
-the absence of MKL code. Candidate messages occur only at the one reviewed file
-page offset. With verbose mode enabled, a candidate rejected by XNU page
+the absence of MKL code. Candidate messages occur only at a compiled strict
+target page or approved BoundedWindow. With verbose mode enabled, a candidate rejected by XNU page
 validation can be reported before identity matching; this is useful when
 examining an on-disk-modified module.
 
@@ -113,4 +122,3 @@ identity as the reviewed original. In verbose dry-run testing, an
 `xnu-page-validation`, `signing-flags`, signing-identity, or CDHash rejection is
 therefore expected. Do not restore or alter the file merely to make a dry-run
 log succeed; follow the staged Ryzen 9 3900X test plan when it is created.
-

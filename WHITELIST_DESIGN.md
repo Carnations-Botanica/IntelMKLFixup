@@ -2,265 +2,180 @@
 
 ## Product boundary
 
-IntelMKLFixup is a generic runtime patcher for named, reviewed x86_64
-implementations of `_mkl_serv_intel_cpu_true`. Discord Stable/Krisp is the
-first built-in application rule and controlled-test image; it is not part of
-the patch engine's identity.
+IntelMKLFixup is an application-independent runtime patcher for named, reviewed
+x86_64 Intel MKL vendor-gate implementations. Discord Stable/Krisp is the first
+compiled application policy and test fixture.
 
-Every patch decision requires all three independently reviewed layers below.
-No layer is sufficient by itself.
+Every patch requires all three layers:
 
 ```text
 ApplicationRule ──┐
-                  ├── ImageVariant/ApplicationPatchRule ── PatchDefinition
-image evidence ───┘
+                  ├── ImageVariant ── allowed compiled PatchDefinitions
+callback bytes ───┘
 ```
 
-The callback fails closed if a path, image identity, match mode, patch
-definition, callback range, or byte sequence is missing, unknown, ambiguous,
-or inconsistent.
+Missing, unknown, ambiguous, disabled, or inconsistent evidence fails closed.
 
-## Callback evidence
+## Available callback evidence
 
-The Darwin 24 `_cs_validate_page` callback supplies a vnode, file offset, page
-mapping, and XNU validation results. It does not supply a trustworthy owner
-process, bundle identifier, task identity, or dyld image path. `proc_self()`
-would identify the current execution context, not necessarily the process that
-will consume a shared file-backed page, so process names do not authorise a
-patch.
+Darwin 24 `_cs_validate_page` supplies a vnode, pager, file offset, one mapped
+page, and XNU validation results. The plugin can synchronously obtain a bounded
+vnode path and code-blob signing evidence. It cannot infer a trustworthy owning
+process, bundle identifier, complete loaded image, or validation completion.
 
-The current implementation uses only evidence available synchronously:
+The implementation uses:
 
-- a regular vnode and a bounded path returned by `vn_getpath`;
-- the callback's file offset and explicitly supplied page bytes;
-- XNU's validated, untainted, executable result;
-- the code blob covering that vnode and offset;
-- exact code-signing identifier, explicit Team ID policy, signing-policy
-  profile, and 20-byte CDHash; and
-- a compiled MKL signature and complete surrounding context.
+- exact bounded path grammar and basename;
+- exact signing identifier and Team ID policy;
+- code-valid, runtime, and ad-hoc signing flags;
+- exact CDHash only when the selected variant requires one;
+- the callback file offset and supplied 4 KiB bytes; and
+- compiled MKL function bytes and exact context.
 
-Bundle IDs, host-process names, arbitrary filesystem reads, Mach-O header
-lookups from another page, and full-file hashing are not used in this hot path.
-Required private XNU symbols remain Darwin-version gated; failure to resolve
-any one disables routing.
+It does not read arbitrary vnode contents, join pages, retain callback pointers,
+or scan unrelated executable mappings.
 
-## Layer 1: ApplicationRule
+## ApplicationRule
 
-An `ApplicationRule` identifies an approved application or native-module
-family. It contains:
+An ApplicationRule contains no MKL bytes. It defines a stable ID, bounded path
+matcher, exact basename, signing identifier, Team ID policy, and signing-policy
+profile. `matchApplicationRule` is generic; application-specific grammars are
+compiled function pointers in the catalogue.
 
-- stable application-rule and path-rule identifiers;
-- a human-readable name;
-- exact basename;
-- a bounded path-rule matcher;
-- exact code-signing identifier;
-- Team ID policy: `Exact` or `Absent`; and
-- a compiled signing-policy profile.
-
-`matchApplicationRule` is the generic bounded entry point. It validates common
-bounds and the exact basename, then invokes the rule's path matcher. The
-Discord path grammar is one function pointer stored in one rule; the callback
-does not call or name it.
-
-Remote data can select only path and signing-policy identifiers already
-compiled into a reviewed release. It cannot supply a regular expression,
-function pointer, parser, or executable rule.
-
-### Initial Discord rule
-
-The sole built-in application rule accepts these exact layouts:
+The Discord Stable rule accepts only versioned Stable paths beneath:
 
 ```text
-/Users/<account>/Library/Application Support/discord/
-  app-<major>.<minor>.<build>/modules/
-  discord_krisp-<revision>/discord_krisp.node
+/Users/<account>/Library/Application Support/discord/app-<n>.<n>.<n>/modules/
+  discord_krisp-<n>/discord_krisp.node
 
-/Users/<account>/Library/Application Support/discord/
-  app-<major>.<minor>.<build>/modules/
-  discord_krisp-<revision>/discord_krisp/discord_krisp.node
+/Users/<account>/Library/Application Support/discord/app-<n>.<n>.<n>/modules/
+  discord_krisp-<n>/discord_krisp/discord_krisp.node
 ```
 
-The account component and numeric fields are bounded. Discord PTB, Canary,
-renamed files, other Electron applications, extra path components, and copies
-outside this layout are rejected. A changing Discord directory version does
-not broaden binary approval because the image variant remains exact.
+It requires basename `discord_krisp.node`, signing identifier `discord_krisp`,
+Team ID `53Q6R32WPB`, and valid hardened-runtime non-ad-hoc signing. Canary,
+PTB, malformed numeric components, renamed modules, and unrelated paths fail.
 
-## Layer 2: PatchDefinition
+See `docs/APPLICATION_RULES.md`.
 
-A `PatchDefinition` describes one reviewed MKL implementation and contains no
-application-specific names or assumptions. The first definition is:
+## PatchDefinition
+
+Patch definitions are application-independent and compiled into reviewed kext
+source. The current definition is:
 
 ```text
 mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1
 ```
 
-It records:
+It records an exact 23-byte oneAPI MKL implementation, exact 16-byte context on
+both sides, x86_64 architecture, and replacement `B8 01 00 00 00 C3`
+(`mov eax, 1; ret`). Masks are not enabled. A new MKL implementation requires a
+new definition and kext release.
 
-- x86_64 architecture;
-- exact 23-byte function implementation;
-- exact 16-byte context before and after it;
-- replacement `B8 01 00 00 00 C3` (`mov eax, 1; ret`);
-- Intel oneAPI MKL build `20201104`; and
-- exact-context and replacement-length requirements.
+See `docs/PATCH_DEFINITIONS.md`.
 
-Discord appears only in the associated image variant's consumer notes. If a
-future Photoshop, Lightroom, DaVinci Resolve, or other approved module embeds
-the same reviewed implementation, it may refer to this definition without any
-change to the patch engine. A different MKL implementation requires a new,
-separately named compiled definition and review.
+## ImageVariant and match modes
 
-The catalogue accepts no approximate match. Masks are structurally present for
-future reviewed relocation cases, but the current definition has none and the
-engine rejects non-empty masks. Replacement length must not exceed the verified
-function sequence. Only the replacement's six bytes are written; the remainder
-of the original function is checked and left unchanged.
+An ImageVariant associates one ApplicationRule with one or more allowed
+PatchDefinitions. Its mode is explicit; no mode silently broadens into another.
 
-## Layer 3: ImageVariant/ApplicationPatchRule
+### StrictVariant
 
-An `ImageVariant` binds one application rule to one or more compiled patch
-definitions and exact binary evidence:
+StrictVariant requires a fixed target offset and any configured CDHash. It
+checks only the allowed definitions at that offset. It never scans and never
+falls back to BoundedWindow. Discord 0.0.403 remains the initial exact fixture.
 
-- stable image-variant identifier;
-- application-rule identifier and observed application version;
-- architecture and exact CDHash;
-- explicit match mode;
-- reviewed executable file range;
-- strict target file offset when applicable; and
-- a bounded list of allowed compiled patch-definition identifiers.
+### BoundedWindow
 
-The initial variant is the Discord Stable 0.0.403 Krisp x86_64 fixture. Its
-consumer-specific CDHash, executable bounds, signing evidence, and target
-offset belong here—not in the MKL patch definition.
+BoundedWindow is enabled only with `-imklfxwindow`. It has no fixed target
+offset and may omit application version and CDHash metadata.
 
-The user has stated that the installed Discord module remains patched on disk
-by the separate Swift application. This refactor did not inspect or modify it.
-Any future evidence capture must continue to distinguish patched and original
-hashes and follow the controlled Phase 6/test plan.
+The policy supplies an executable range and one start-aligned search window no
+larger than 4096 bytes. The callback must contain that entire window. Only after
+path and signing approval does the engine search every valid position for each
+allowed compiled definition. Complete exact function and context bytes count as
+a match. Zero or multiple matches within the window reject.
 
-## Match modes
+This is window-local uniqueness, not image-wide uniqueness. No claim is made
+about code outside the window, and candidates crossing a boundary are ignored.
+An update is eligible only if the recognised implementation remains uniquely
+inside the same page.
 
-### Strict variant mode — enabled
+The initial Discord window is:
 
-The first Discord live test uses strict variant mode:
+```text
+0x650000..<0x651000
+```
 
-1. require an approved `ApplicationRule` path and basename;
-2. require its exact signing policy, signing identifier, Team ID policy, and
-   image-variant CDHash;
-3. require the callback page to contain the variant's reviewed target offset;
-4. require that offset to lie inside the reviewed executable range;
-5. evaluate only the variant's allowed compiled patch definitions at that one
-   offset;
-6. require exactly one complete original or already-patched match; and
-7. require exact search bytes and complete before/after context inside the
-   callback range.
+The current known strict target `0x650100` lies inside it. The window is source
+evidence, not a promise that every future Discord version will retain that
+layout.
 
-Zero matches reject. More than one matching patch definition rejects as an
-ambiguous catalogue. A split or truncated signature is declined; no adjacent
-page is read.
+### Future ImageScan
 
-### Reviewed search mode — represented but disabled
+`image_scan` is a reserved manifest term for a future authenticated userspace
+pre-scan. The current validator rejects it and the kernel has no ImageScan mode.
+See `docs/USERSPACE_PRESCAN_DESIGN.md`.
 
-The data model explicitly contains `ReviewedSearch`, but
-`ReviewedSearchModeEnabled` is `false`, the kernel range prefilter ignores such
-variants, and the userspace validator rejects `reviewed_search` manifests.
+## Signed manifest and runtime status
 
-Before separate approval, a future implementation must have host tests proving
-that it:
+Schema version 3 represents application rules, strict variants, bounded-window
+variants, and the reserved ImageScan mode. It permits optional version/CDHash
+metadata and a bounded `search_window`, but has no machine-code, mask, script,
+URL, or replacement fields. Patch identifiers must already be compiled into the
+updater and kext release.
 
-- starts only after full application and native-module identity approval;
-- scans only a reviewed executable range supplied by the callback;
-- never joins signatures across callback ranges;
-- requires exactly one complete match for an allowed compiled definition;
-- rejects zero and multiple matches; and
-- remains deterministic and strictly bounded.
+The updater authenticates and stores this manifest in userspace. The current
+kext does not read that store. A manifest installation alone cannot add an app,
+move a window, or enable a policy.
 
-No reviewed-search implementation or hidden enable switch exists today.
+## Adding or updating support
 
-## Signed whitelist and runtime availability
+A Discord update needs no policy change when its existing path/signing rule
+passes and the exact supported MKL implementation remains unique inside the
+compiled window. A changed Team ID, signing identifier, module path grammar, or
+window page requires review and a compiled catalogue update.
 
-Schema version 2 mirrors the three-layer design with `application_rules` and
-`image_variants`. Patch definitions remain source-only and compiled into the
-signed kext. A signed manifest may select compiled patch IDs and carry bounded
-identity, CDHash, match mode, target offset, and executable-range metadata. It
-has no fields for search bytes, replacement bytes, masks, scripts, URLs, or
-kernel code.
+A second application currently requires:
 
-The current updater authenticates, validates, reports, and atomically stores
-this policy in userspace. The running kext does **not** consume that store, so
-installing a manifest has no runtime effect.
+1. original binary provenance and signing evidence;
+2. a bounded ApplicationRule/path grammar;
+3. either an exact strict variant or reviewed one-page window;
+4. association with an existing compiled PatchDefinition, or a new reviewed
+   definition if its MKL implementation differs;
+5. host tests and a schema/manifest update; and
+6. a reviewed kext release.
 
-For the initial release, the safest practical policy transport is therefore a
-compiled-in catalogue. An application identity update requires a reviewed kext
-release. This deliberately chooses an auditable boot-time constant over file
-I/O, JSON parsing, mutable state, or an unauthenticated userspace handoff in the
-page-validation path.
-
-The intended later no-core-rebuild path is a bounded binary boot policy derived
-from the authenticated manifest and verified before callback registration. It
-must use a separately reviewed, real OpenCore/kernel transport and authenticate
-the payload with a public key compiled into the kext. The kext must parse it
-once at startup into fixed-capacity storage, freeze it before routing, and fall
-back to the built-in catalogue on any error. No such transport is implemented
-or claimed safe yet; its exact OpenCore carrier, size limits, retrieval API,
-signature verifier, and failure semantics require a dedicated audit before
-code is written.
-
-A post-boot IOUserClient handoff is not selected initially: it adds client
-authentication, lifecycle, locking, timing, and attack surface, and could miss
-images validated before policy installation. Runtime filesystem parsing is
-also rejected. Networking remains userspace-only.
+The callback and core engine do not change when a second application reuses the
+existing policy types.
 
 ## Non-functional Photoshop example
 
-This conceptual example shows the linkage only. It is deliberately not valid
-for release: the path-rule ID is not compiled, the signing evidence and CDHash
-are placeholders, and no Photoshop version has been inspected or tested.
+This example is conceptual only. No Photoshop binary, path, signature, window,
+or MKL implementation has been reviewed.
 
 ```yaml
 application_rules:
   - id: adobe-photoshop-example
     application_family: adobe-photoshop
-    display_name: Adobe Photoshop native MKL module (EXAMPLE ONLY)
-    path_rule_id: adobe-photoshop-versioned-module-path-v1  # not compiled
-    basename: <reviewed-native-module-basename>
-    signing_identifier: <reviewed-signing-identifier>
+    display_name: Adobe Photoshop module (EXAMPLE ONLY)
+    path_rule_id: adobe-photoshop-module-path-v1  # not compiled
+    basename: <reviewed-basename>
+    signing_identifier: <reviewed-signing-id>
     team_identifier_policy: exact
     team_identifier: <reviewed-team-id>
     signing_policy_id: valid-runtime-no-adhoc-v1
 
 image_variants:
-  - id: adobe-photoshop-example-x86_64
+  - id: adobe-photoshop-example-strict
     application_rule_id: adobe-photoshop-example
     application_version: <reviewed-version>
     architecture: x86_64
-    cdhash: <reviewed-20-byte-cdhash>
+    cdhash: <reviewed-cdhash>
     match_mode: strict_variant
     target_file_offset: <reviewed-offset>
-    executable_range:
-      start: <reviewed-start>
-      end: <reviewed-end>
+    executable_range: {start: <start>, end: <end>}
+    search_window: null
     allowed_patch_definition_ids:
       - mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1
 ```
-
-This does not assert that Photoshop contains that MKL generation or that the
-patch is safe for it.
-
-## Adding a second application today
-
-Supporting a second application currently requires both a manifest update and
-a kext rebuild:
-
-1. obtain an original image from known provenance and record its signature,
-   CDHash, architecture, UUID, full-file hash, executable ranges, and version;
-2. add or reuse a bounded `ApplicationRule` path matcher and signing profile;
-3. prove the strict target offset and exact compiled MKL definition/context;
-4. add an `ImageVariant` that links the application rule to allowed patch IDs;
-5. add positive, mutation, truncation, wrong-path, wrong-signature, wrong-CDHash,
-   offset, ambiguity, and already-patched host tests;
-6. add the same layered identity records to a new signed manifest version; and
-7. build, review, sign, and release the kext and manifest together.
-
-If the MKL function differs, a new compiled `PatchDefinition` and its own
-review are also required. The callback and patch engine do not need to be
-rewritten.

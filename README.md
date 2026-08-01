@@ -25,6 +25,13 @@ phases are complete. See [diagnostics and controls](docs/DEBUGGING.md) for boot
 arguments and exact log commands, and [emergency recovery](docs/RECOVERY.md)
 before attempting any controlled test.
 
+Two runtime policy modes are compiled: StrictVariant requires the reviewed
+binary identity and exact file offset; experimental BoundedWindow requires
+`-imklfxwindow` and searches exactly one approved callback-complete validation
+window no larger than one x86_64 page. It proves uniqueness only within that
+window. Future image-wide tolerance requires the separately designed
+userspace-assisted ImageScan architecture; it is not implemented.
+
 Whitelist release assets are handled only by the signed userspace mechanism
 described in [whitelist updates](docs/WHITELIST_UPDATES.md). The kernel extension
 does not contact GitHub or parse an external manifest. Installing a userspace
