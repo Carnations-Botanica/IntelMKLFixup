@@ -24,7 +24,6 @@ Lilu.kext/
 *.ips
 *.dmp
 
-/Release/
 /EFI/
 /*.kext/
 *.node
