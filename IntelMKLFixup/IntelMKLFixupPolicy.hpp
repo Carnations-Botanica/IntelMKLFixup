@@ -66,6 +66,20 @@ struct RuntimePolicyControls {
 	bool boundedWindowEnabled;
 };
 
+struct RuntimeOperatingControls {
+	bool pluginEnabled;
+	bool fileBackedPatchAcknowledged;
+	bool dryRun;
+};
+
+enum class FileBackedWriteDecision : uint8_t {
+	PluginDisabled,
+	DetectionOnly,
+	WriteNotAcknowledged,
+	StrictWritePermitted,
+	ActiveModeRejected
+};
+
 struct ApplicationRule {
 	const char *identifier;
 	const char *name;
@@ -507,6 +521,34 @@ inline PatchSelection selectPolicyPatch(const uint8_t *data, size_t dataSize,
 		return selectStrictPatch(data, dataSize, rangeOffset, variant);
 	return selectBoundedWindowPatch(data, dataSize, rangeOffset, variant,
 		controls.boundedWindowEnabled);
+}
+
+inline FileBackedWriteDecision decideFileBackedWrite(MatchMode matchMode,
+	const RuntimeOperatingControls &controls) {
+	if (!controls.pluginEnabled)
+		return FileBackedWriteDecision::PluginDisabled;
+	if (controls.dryRun)
+		return FileBackedWriteDecision::DetectionOnly;
+	if (!controls.fileBackedPatchAcknowledged)
+		return FileBackedWriteDecision::WriteNotAcknowledged;
+	return matchMode == MatchMode::StrictVariant ?
+		FileBackedWriteDecision::StrictWritePermitted :
+		FileBackedWriteDecision::ActiveModeRejected;
+}
+
+inline uint8_t *mutableTargetPointer(uint8_t *data, size_t dataSize,
+	uint64_t rangeOffset, uint64_t targetFileOffset,
+	const PatchDefinition &patch) {
+	if (data == nullptr || !validPatchDefinition(patch) ||
+		rangeOffset > targetFileOffset)
+		return nullptr;
+	const uint64_t relative = targetFileOffset - rangeOffset;
+	if (relative > static_cast<uint64_t>(dataSize))
+		return nullptr;
+	const size_t offset = static_cast<size_t>(relative);
+	if (patch.replacementSize > dataSize - offset)
+		return nullptr;
+	return data + offset;
 }
 
 } // namespace IMKLFX

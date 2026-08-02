@@ -29,6 +29,11 @@ constexpr uint8_t FixtureContextBefore[] = {0x90, 0x90, 0x90, 0x90};
 constexpr uint8_t FixtureContextAfter[] = {0x33, 0xF6, 0x89, 0x74};
 constexpr IMKLFX::RuntimePolicyControls WindowOff {false};
 constexpr IMKLFX::RuntimePolicyControls WindowOn {true};
+constexpr IMKLFX::RuntimeOperatingControls PluginOff {false, true, false};
+constexpr IMKLFX::RuntimeOperatingControls DetectOnly {true, false, false};
+constexpr IMKLFX::RuntimeOperatingControls DryRunWithoutAcknowledgement {true, false, true};
+constexpr IMKLFX::RuntimeOperatingControls DryRunWithAcknowledgement {true, true, true};
+constexpr IMKLFX::RuntimeOperatingControls AcknowledgedActive {true, true, false};
 
 bool matchFixturePath(const char *path, size_t length) {
 	return length == sizeof(FixturePath) - 1 &&
@@ -365,6 +370,21 @@ void testSecondApplicationReusesPatchWithoutEngineChanges() {
 	assert(FixtureApplication.pathMatcher != SecondFixtureApplication.pathMatcher);
 }
 
+void testOperatingModesFailClosed() {
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::StrictVariant,
+		PluginOff) == IMKLFX::FileBackedWriteDecision::PluginDisabled);
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::StrictVariant,
+		DetectOnly) == IMKLFX::FileBackedWriteDecision::WriteNotAcknowledged);
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::StrictVariant,
+		DryRunWithoutAcknowledgement) == IMKLFX::FileBackedWriteDecision::DetectionOnly);
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::StrictVariant,
+		DryRunWithAcknowledgement) == IMKLFX::FileBackedWriteDecision::DetectionOnly);
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::StrictVariant,
+		AcknowledgedActive) == IMKLFX::FileBackedWriteDecision::StrictWritePermitted);
+	assert(IMKLFX::decideFileBackedWrite(IMKLFX::MatchMode::BoundedWindow,
+		AcknowledgedActive) == IMKLFX::FileBackedWriteDecision::ActiveModeRejected);
+}
+
 } // namespace
 
 int main() {
@@ -378,5 +398,6 @@ int main() {
 	testMultipleDefinitionsAtOnePositionAreAmbiguous();
 	testWindowPolicyBoundsAndGate();
 	testSecondApplicationReusesPatchWithoutEngineChanges();
+	testOperatingModesFailClosed();
 	return 0;
 }
