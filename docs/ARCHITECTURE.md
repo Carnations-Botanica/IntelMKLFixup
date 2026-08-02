@@ -2,10 +2,11 @@
 
 ## Purpose
 
-IntelMKLFixup is an x86_64 AMD Hackintosh Lilu plugin that changes only named,
+IntelMKLFixup is an x86_64 AMD Hackintosh Lilu plugin that detects named,
 reviewed implementations of Intel MKL's `_mkl_serv_intel_cpu_true` predicate.
-The supported implementation is replaced in validated executable memory with
-`mov eax, 1; ret`. Numerical MKL functions are not redirected or replaced.
+The catalogue retains the reviewed `mov eax, 1; ret` replacement, but current
+kernel code does not apply it. Numerical MKL functions are not redirected or
+replaced.
 
 Discord Stable/Krisp is the first application policy, not a dependency of the
 patch engine.
@@ -29,9 +30,17 @@ only generic catalogue arrays and selectors; it does not name Discord.
 
 The plugin routes `_cs_validate_page` only. The original function is invoked
 exactly once before IntelMKLFixup examines the result. On x86_64, the callback
-provides a vnode, a 4 KiB page offset, a pointer to that page, and validation,
-taint, and NX bitmaps. It does not provide a complete Mach-O image or a signal
-that all executable pages have been observed.
+provides a vnode, a 4 KiB page offset, a **const kernel alias of the actual
+external vnode-pager VM page**, and validation, taint, and NX bitmaps. It is not
+a copied scratch buffer or a process-private executable mapping. It also does
+not provide a complete Mach-O image or a signal that all executable pages have
+been observed.
+
+XNU 11417.140.69 maps the `vm_page` for validation and can use a direct
+`phystokv` alias on the one-page x86_64 path. Hardware testing demonstrated
+that writes through this alias change bytes returned by ordinary reads of the
+backing file. The callback is therefore permanently classified as a read-only
+detection boundary.
 
 The callback never reads another page, opens the vnode, parses a Mach-O image,
 or retains the callback data pointer. Both runtime modes decline candidates
@@ -54,8 +63,9 @@ validation callback
   → obtain signing identifier, Team ID, flags, and CDHash
   → approve exactly one ImageVariant
   → run only that variant's explicit match mode
-  → dry-run, reject, recognise already-patched bytes, or perform guarded write
-  → revalidate and report the outcome
+  → dry-run, reject, or recognise already-patched bytes
+  → if active mode requested, block with unsafe-file-backed-write-blocked
+  → report modified=no
 ```
 
 No application mismatch or missing MKL implementation causes a deliberate
@@ -75,7 +85,8 @@ structure fields used by the generic policy model.
 
 BoundedWindow is experimental and additionally requires `-imklfxwindow`.
 Without that boot argument, its application identity may be recognised but no
-search or patch is performed.
+search is performed. With the argument, search remains detection-only; no
+validation page is writable.
 
 Its exact guarantee is:
 
@@ -108,16 +119,54 @@ manifest validator. Its intended purpose is complete executable-section
 inspection in userspace followed by an authenticated, binary-bound policy.
 See `docs/USERSPACE_PRESCAN_DESIGN.md`.
 
-## Patch write path
+## Validation-page safety boundary
 
-After a unique selection, the engine acquires Lilu's kernel write lock, enables
-kernel writing, repeats the same strict or bounded selection, and requires the
-same patch pointer and file offset. It writes only the compiled replacement
-length and verifies the already-patched form before restoring protection.
+The previous write path cast away `const`, disabled kernel write protection,
+and copied into the callback pointer. Controlled hardware testing proved that
+this mutated a vnode-backed resident page and cache-visible file contents. That
+architecture is revoked; see `FILE_BACKED_WRITE_INCIDENT.md`.
 
-The replacement itself is the idempotence marker: subsequent callbacks detect
-the complete reviewed replacement plus untouched original tail and do not
-write again. Dry-run returns before changing write protection.
+Current code never calls `setKernelWriting`, never casts the callback bytes to
+a mutable pointer, and never copies replacement bytes. Exact original matches
+are reported in dry-run. In non-dry-run mode they produce:
+
+```text
+outcome=unsafe-file-backed-write-blocked modified=no
+```
+
+Already-patched bytes may still be detected for diagnosis, but no restoration
+or additional mutation is attempted. `Tests/check_validation_callback_read_only.sh`
+guards this boundary in CI. A future runtime engine must operate only on a
+verified private/COW mapping belonging to the approved target process after
+loading; it must not reuse this callback destination.
+
+Writing through `_cs_validate_page` is **permanently forbidden**, including a
+purported write-then-restore operation. Neither unchanged file timestamps nor
+restoring the original byte sequence can make a vnode/UBC mutation
+process-private.
+
+## Replacement architecture status
+
+Pinned Lilu 1.7.2's ordinary `BinaryModInfo` path is not a replacement: its
+`performPagePatch` writes through the same code-signing validation buffer.
+Lilu's process-load callback observes `exec`, not arbitrary later native-module
+loads such as Electron's `discord_krisp.node`.
+
+The safest conditional candidate is an authenticated component present in the
+approved process before the native module loads. A controlled fixture verifies
+that an image-add callback can run before library initializers, but admission
+into hardened-runtime Discord and the actual Discord mapping properties remain
+unresolved. The current feasibility investigation found no practical safe
+admission, task-port, environment, or interposition route under the stated
+constraints. Process-private post-map patching is **unproven research**, not a
+replacement architecture. No implementation or write experiment is approved.
+
+See [`PRIVATE_MAPPING_FEASIBILITY.md`](../PRIVATE_MAPPING_FEASIBILITY.md),
+[`DISCORD_KRISP_RUNTIME_MAP.md`](../DISCORD_KRISP_RUNTIME_MAP.md),
+[`LOAD_ORDER_ANALYSIS.md`](../LOAD_ORDER_ANALYSIS.md),
+[`MEMORY_ONLY_ARCHITECTURE_OPTIONS.md`](../MEMORY_ONLY_ARCHITECTURE_OPTIONS.md),
+and [`MEMORY_PATCH_THREAT_MODEL.md`](../MEMORY_PATCH_THREAT_MODEL.md) for the
+evidence and remaining approval gate.
 
 ## Policy source
 

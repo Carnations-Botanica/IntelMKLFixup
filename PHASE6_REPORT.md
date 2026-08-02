@@ -2,19 +2,27 @@
 
 ## Outcome
 
-**Recommendation: Ready for StrictVariant dry-run only.**
+**Active runtime patch unsafe: current validation-page write persists to disk.**
+
+This report's original build/test results are retained as historical evidence,
+but its recommendation is superseded. Controlled Ryzen 9 3900X testing proved
+that the active callback write changed the vnode-backed `discord_krisp.node`
+page and cache-visible file contents. The 1.0.0-rc1 active path is revoked.
+Current source is detection-only and blocks every non-dry-run match with
+`outcome=unsafe-file-backed-write-blocked modified=no`. See
+`FILE_BACKED_WRITE_INCIDENT.md`.
 
 The generic policy architecture passed source review, clean Debug and Release
 builds succeeded, all host tests passed, both sanitizer runs were clean, and
 Clang's static analyzer emitted no diagnostics for the kext translation unit.
-This is not evidence of kernel runtime safety. No live kernel test has occurred,
-the local Discord module is known to remain patched on disk, and the strict
-fixture must be checked against the restored original before active patching.
+This was not evidence of kernel runtime safety. The subsequent live kernel test
+disproved the assumed memory-only behaviour: the local Discord module became
+cache/file-read-visible with the six replacement bytes. No validation-page
+artifact is approved for active patching.
 
-Experimental BoundedWindow is host-tested but should not proceed to a live dry
-run until StrictVariant completes and a genuine publisher-signed Discord update
-exists whose target remains uniquely inside the approved page. No signed binary
-should be altered to manufacture that condition.
+StrictVariant and BoundedWindow matching remain host-tested policy components,
+but neither authorises writes to validation pages. Any future live use is
+detection-only until a separately reviewed process-private engine exists.
 
 ## Source state and cleanliness
 
@@ -343,9 +351,10 @@ bytes were changed during Phase 6.
 
 ## Unresolved risks and blockers
 
-1. No kext has been loaded on the Ryzen 9 3900X. Private Darwin 24 symbol
-   resolution, Lilu routing, write protection, and live callback behavior remain
-   unverified.
+1. The kext was subsequently loaded on the Ryzen 9 3900X. Darwin 24 symbol
+   resolution and Lilu routing succeeded, but the active callback write was
+   proven unsafe because it mutated the vnode-backed page and bytes returned by
+   ordinary file reads.
 2. The installed Discord module is known to be patched on disk. StrictVariant
    approval requires restoring and hashing the exact original. A patched/ad-hoc
    module is expected to fail the signing/CDHash gate.
@@ -369,4 +378,5 @@ Phase 6 did not install a kext, mount or modify an EFI, edit OpenCore or
 Discord, invoke the Swift patcher, reboot, shut down, log out, or perform live
 kernel testing.
 
-Phase 7 was not started.
+Phase 7 later produced the now-revoked 1.0.0-rc1 candidate. No existing build
+artifact is approved for active runtime patching.

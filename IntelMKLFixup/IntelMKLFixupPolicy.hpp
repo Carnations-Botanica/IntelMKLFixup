@@ -509,19 +509,6 @@ inline PatchSelection selectPolicyPatch(const uint8_t *data, size_t dataSize,
 		controls.boundedWindowEnabled);
 }
 
-inline uint8_t *targetPointer(uint8_t *data, size_t dataSize, uint64_t rangeOffset,
-	uint64_t targetFileOffset, const PatchDefinition &patch) {
-	if (data == nullptr || !validPatchDefinition(patch) || rangeOffset > targetFileOffset)
-		return nullptr;
-	const uint64_t relative = targetFileOffset - rangeOffset;
-	if (relative > static_cast<uint64_t>(dataSize))
-		return nullptr;
-	const size_t offset = static_cast<size_t>(relative);
-	if (patch.replacementSize > dataSize - offset)
-		return nullptr;
-	return data + offset;
-}
-
 } // namespace IMKLFX
 
 #endif /* IntelMKLFixupPolicy_hpp */

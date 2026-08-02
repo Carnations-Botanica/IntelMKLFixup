@@ -1,5 +1,18 @@
-# !!WARNING!!
-Me (Kaitlyn), or Carnations Botanica is not responsible for any data loss incurred by using this kernel extension. Although it is ***highly*** unlikely, you have been warned.
+# CRITICAL SAFETY NOTICE
+
+**Do not use the 1.0.0-rc1 kext in active mode.** Controlled Ryzen 9 3900X
+testing proved that its write through `_cs_validate_page` changes the
+vnode-backed `discord_krisp.node` page and becomes visible through ordinary
+file reads without advancing mtime or ctime. The candidate is revoked for
+active use. See [FILE_BACKED_WRITE_INCIDENT.md](FILE_BACKED_WRITE_INCIDENT.md).
+
+Current source is detection-only: dry-run can report an eligible exact match,
+while non-dry-run operation fails closed with
+`outcome=unsafe-file-backed-write-blocked modified=no`. No safe runtime
+replacement has been implemented.
+
+Me (Kaitlyn), or Carnations Botanica is not responsible for data loss incurred
+by using this experimental kernel extension.
 
 ## IntelMKLFixup
 Dead-simple Intel(tm) MKL (Math Kernel Library) patcher for macOS, with a twist.
@@ -12,7 +25,11 @@ first controlled-test fixture, not the product boundary.
 ## Why?
 Hackintoshes with AMD CPUs have infamously had a problem with software compiled against Intel's MKL, often resulting in many popular applications just not running correctly or at all.
 
-This is where IntelMKLFixup comes in, IntelMKLFixup will *invisibly* patch bits of Intel's MKL in memory to help provide compatibility for AMD CPUs, without any user interaction or tweaking. Thus, allowing applications that once ran incorrectly or didn't work at all, to now run with little to no issues.
+The project is investigating whether a strictly process-private runtime patch
+can bypass this vendor gate safely. The former validation-page write is not an
+in-memory-only mechanism and has been disabled. Until a replacement
+architecture is reviewed and implemented, this repository provides only
+bounded detection, policy, catalogue, and update tooling.
 
 ## Requirements
 
@@ -24,10 +41,11 @@ This is where IntelMKLFixup comes in, IntelMKLFixup will *invisibly* patch bits 
 
 ## Testing controls
 
-This release candidate has passed clean builds, host tests, sanitizers, static
-analysis, and artifact inspection. It is ready only for the staged manual
-StrictVariant dry run in [TEST_PLAN_3900X.md](TEST_PLAN_3900X.md). It has not
-completed live kernel or functional Krisp testing and is not a general release.
+The former release candidate passed clean builds, host tests, sanitizers,
+static analysis, and artifact inspection, but hardware testing invalidated its
+core memory-only assumption. Active testing is prohibited. The revised
+[TEST_PLAN_3900X.md](TEST_PLAN_3900X.md) permits recovery verification and
+detection-only dry-run evidence; it is not a runtime-patch plan.
 See [diagnostics and controls](docs/DEBUGGING.md) for boot arguments and exact
 log commands, and [emergency recovery](docs/RECOVERY.md) before attempting the
 controlled test.

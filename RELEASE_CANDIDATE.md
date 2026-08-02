@@ -2,11 +2,15 @@
 
 ## Recommendation
 
-**Ready for manual dry-run.**
+**Revoked: not ready for installation or active runtime testing.**
 
-This recommendation is limited to the StrictVariant dry-run procedure in
-`TEST_PLAN_3900X.md`. It is not approval for an active runtime patch, live
-BoundedWindow testing, or general distribution.
+Controlled Ryzen 9 3900X testing proved that the active validation-page write
+changed the vnode-backed Discord module and cache-visible file contents. The
+artefact hashes below identify historical, unsafe-for-active-use products; they
+must not be installed as a runtime patch. See `FILE_BACKED_WRITE_INCIDENT.md`.
+
+The previous dry-run recommendation is superseded. Current source is
+detection-only and has not been rebuilt in this incident response.
 
 ## Source state
 
@@ -175,22 +179,20 @@ temporary file, test fixture, dependency checkout, or cache.
 
 ## Unresolved issues and risks
 
-1. The release candidate has not been loaded into the Ryzen 9 3900X kernel.
-2. Discord voice, output, device switching, and Krisp have not been functionally
-   tested with the runtime patch.
-3. The installed Discord module is known to remain patched on disk. The manual
-   plan requires restoring and verifying the exact original before strict
-   success can be claimed.
-4. Darwin 24 private code-signing symbols and `_cs_validate_page` routing remain
-   live-test risks.
-5. BoundedWindow is experimental, page-local only, and not approved for the
-   first test.
-6. Future userspace-assisted image-wide pre-scan remains design-only.
-7. The production manifest trust key is unconfigured, and installed manifests
+1. The release candidate was loaded into the Ryzen 9 3900X kernel and its
+   validation-page write changed cache/file-read-visible Discord module bytes.
+2. The active architecture is revoked; application functionality cannot make
+   this destination safe.
+3. The affected Discord module must be restored and verified against original
+   SHA-256 `de061edb4387fc5bba2b8535483aa2f4347c17bc9e4d25babef36172c86a9f9a`.
+4. StrictVariant and BoundedWindow are detection policies only in current
+   source. The revoked binary does not contain that source mitigation.
+5. Future userspace-assisted image-wide pre-scan remains design-only.
+6. The production manifest trust key is unconfigured, and installed manifests
    have no runtime effect.
-8. The bundle is locally ad-hoc signed and is neither Developer ID signed nor
+7. The bundle is locally ad-hoc signed and is neither Developer ID signed nor
    notarized.
-9. The kext bundle version remains `1.0.0`; `1.0.0-rc1` is the release-candidate
+8. The kext bundle version remains `1.0.0`; `1.0.0-rc1` is the release-candidate
    label rather than a changed bundle version.
 
 ## Safety-boundary confirmation

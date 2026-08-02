@@ -1,9 +1,9 @@
 # Diagnostics and controls
 
-IntelMKLFixup is experimental kernel software. Do not enable its write path
-until the dry-run procedure has produced the expected identity and signature
-results. The plugin does not install itself, edit OpenCore, or modify the
-Discord file on disk.
+IntelMKLFixup is experimental kernel software. Active validation-page patching
+has been revoked: hardware testing proved that it can change the vnode-backed
+file contents. The current source treats the callback as detection-only. The
+plugin does not install itself or edit OpenCore.
 
 ## Boot arguments
 
@@ -15,7 +15,7 @@ arguments already required by the system.
 |---|---|
 | `-imklfxoff` | Completely prevents Lilu from starting this plugin. A reboot is required. |
 | `-imklfxdbg` | Enables verbose IntelMKLFixup candidate diagnostics. Usernames are redacted from paths. It does not enable patching by itself. |
-| `-imklfxdryrun` | Performs the same OS, CPU, page-validation, path, signing-identity, configured CDHash/offset or bounded-window, signature, and context checks, but returns before acquiring the write lock or modifying memory. |
+| `-imklfxdryrun` | Performs the OS, CPU, page-validation, path, signing-identity, configured CDHash/offset or bounded-window, signature, and context checks. The current source never writes even when this argument is absent. |
 | `-imklfxwindow` | Experimentally enables compiled BoundedWindow policies. It does not enable broad or image-wide scanning. Without it, BoundedWindow policies fail closed. |
 | `-imklfxbuiltin` | Explicitly pins policy to the whitelist compiled into this kext. This is already the only policy source in the current version; the flag records that the choice was deliberate. |
 
@@ -54,10 +54,10 @@ states are distinct:
 | Window search started | `event=search-started mode=bounded-window` | The complete approved one-page window is present and its experimental boot gate is enabled. This is not an image-wide search. |
 | Window search disabled | `outcome=search-mode-disabled` | A matching BoundedWindow policy exists, but `-imklfxwindow` is absent. No search or write occurs. |
 | Signature found in dry run | `signature=supported outcome=dry-run modified=no` | Both image approval and the exact compiled MKL signature/context succeeded. No write was attempted. |
-| Patch completed | `signature=supported outcome=patched modified=yes` | The replacement was written and verified in memory. This does not prove Discord functionality. |
+| Unsafe active write blocked | `signature=supported outcome=unsafe-file-backed-write-blocked modified=no` | A supported target was detected without dry-run, but the validation page was not written. This is the required fail-closed result. |
 | Skipped | `outcome=skipped` | The target was already patched during the checked callback. |
 | Rejected | `outcome=rejected reason=...` | A candidate failed closed. The reason identifies the failed gate without printing untrusted identity strings. |
-| Error | `outcome=error reason=...` | A write-protection or post-write verification operation failed. Stop testing and use the recovery procedure. |
+| Error | `outcome=error reason=...` | A policy or routing error occurred. Stop testing and use the recovery procedure. |
 
 No message is emitted for ordinary validation callbacks, unrelated paths, or
 the absence of MKL code. Candidate messages occur only at a compiled strict

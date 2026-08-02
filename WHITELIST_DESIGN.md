@@ -2,9 +2,11 @@
 
 ## Product boundary
 
-IntelMKLFixup is an application-independent runtime patcher for named, reviewed
-x86_64 Intel MKL vendor-gate implementations. Discord Stable/Krisp is the first
-compiled application policy and test fixture.
+IntelMKLFixup is an application-independent detector and prospective runtime
+patcher for named, reviewed x86_64 Intel MKL vendor-gate implementations.
+Validation callbacks are currently detection-only after the file-backed-write
+incident. Discord Stable/Krisp is the first compiled application policy and
+test fixture.
 
 Every patch requires all three layers:
 

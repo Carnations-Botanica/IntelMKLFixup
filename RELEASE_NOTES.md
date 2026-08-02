@@ -2,10 +2,14 @@
 
 ## Status
 
-This is an experimental release candidate for **manual StrictVariant dry-run
-testing only**. It has passed clean builds and host-side validation but has not
-been loaded into the test kernel. Do not treat a successful boot or Discord
-launch as proof that runtime patching or Krisp works.
+**This release candidate is revoked. Do not use it in active mode.** Controlled
+Ryzen 9 3900X testing proved that its write through `_cs_validate_page`
+changed the vnode-backed Discord module and cache-visible file contents without
+advancing mtime or ctime. The historical build results do not establish safety.
+See `FILE_BACKED_WRITE_INCIDENT.md`.
+
+Current source blocks active writes and remains detection-only, but no
+replacement release artefact has been built.
 
 ## Architecture
 
@@ -83,8 +87,10 @@ mkl-serv-intel-cpu-true-oneapi-build-20201104-x86_64-v1
 
 It recognises one reviewed Intel oneAPI MKL build 20201104 implementation of
 `_mkl_serv_intel_cpu_true` using exact function bytes and exact 16-byte context
-on both sides. It writes only `B8 01 00 00 00 C3` (`mov eax, 1; ret`). Numerical
-MKL functions are not replaced or redirected.
+on both sides. The historical active implementation wrote
+`B8 01 00 00 00 C3` (`mov eax, 1; ret`), but that write path is revoked because
+it changed vnode-backed file contents. Current source is detection-only.
+Numerical MKL functions are not replaced or redirected.
 
 ## Boot arguments
 
@@ -100,12 +106,13 @@ Other controls:
 |---|---|
 | `-imklfxoff` | Disable the plugin completely. |
 | `-imklfxdbg` | Enable meaningful verbose diagnostics; home usernames are redacted. |
-| `-imklfxdryrun` | Run all eligibility and byte checks without modifying memory. |
+| `-imklfxdryrun` | Run all eligibility and byte checks without modifying memory. This is the only acceptable mode for the revoked binary. |
 | `-imklfxbuiltin` | Explicitly record use of the compiled catalogue, currently the only runtime policy source. |
 | `-imklfxwindow` | Experimentally enable compiled BoundedWindow policies. Do not use for the first strict test. |
 
-Follow `TEST_PLAN_3900X.md`; do not improvise a live BoundedWindow fixture or
-modify a publisher-signed application to force a test case.
+The original active test instructions are withdrawn. Follow the incident-era
+`TEST_PLAN_3900X.md` only for recovery and detection evidence; do not improvise
+a live fixture or modify a publisher-signed application.
 
 ## Known limitations and risks
 

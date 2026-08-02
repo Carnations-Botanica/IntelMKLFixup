@@ -2,6 +2,35 @@
 
 All notable changes to this fork are documented here.
 
+## Unreleased — validation-page write incident
+
+### Critical safety change
+
+- Revoked 1.0.0-rc1 for active use after controlled Ryzen 9 3900X testing
+  proved that its six-byte `_cs_validate_page` write changed the vnode-backed
+  `discord_krisp.node` page and cache-visible file contents without advancing
+  inode timestamps.
+- Removed all validation-callback writes, kernel write-protection changes,
+  mutable casts, mutable target-pointer helpers, replacement copies, and
+  `modified=yes` outcomes.
+- Non-dry-run matches now fail closed with
+  `outcome=unsafe-file-backed-write-blocked modified=no`; dry-run detection
+  remains available.
+- Added a CI source-safety regression and
+  `FILE_BACKED_WRITE_INCIDENT.md`.
+- Withdrew all active StrictVariant and BoundedWindow hardware-test stages.
+
+### Architecture review
+
+- Verified against Apple XNU 11417.140.69 that `_cs_validate_page` receives a
+  const alias of a vnode-pager-backed VM page; it is not a process-private
+  patch destination.
+- Verified that pinned Lilu 1.7.2 `BinaryModInfo` patching writes through the
+  same validation-buffer class and is not a safe replacement for arbitrary
+  native modules.
+- Reserved replacement work for a separately approved process-private,
+  post-load architecture.
+
 ## 1.0.0-rc1 — 2026-08-01
 
 Release candidate for controlled manual testing. The kext bundle version

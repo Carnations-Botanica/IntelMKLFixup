@@ -5,6 +5,32 @@ Audited repository state: `main` at `5181e8cbc860a234e353e97a7eb59dc34b617830`
 Release source compared: prerelease `1.0.0`, tag commit `52212946bfbccb4dc617236d2505fd4889387669`  
 Audit status: **complete; no implementation was performed**
 
+## 2026-08-01 hardware-incident addendum
+
+**Critical: active validation-page patching is unsafe and must not be used.**
+
+Subsequent controlled Ryzen 9 3900X testing of commit `7a02733` proved that the
+six-byte write through `_cs_validate_page` changed the vnode-backed
+`discord_krisp.node` page and the bytes returned by ordinary file reads. The
+hash changed from
+`de061edb4387fc5bba2b8535483aa2f4347c17bc9e4d25babef36172c86a9f9a` to
+`95e611b3bd89d95d67f1e809eb1cbefcc8eedbba3bd5b70bf11cf044cf72b27d`;
+offset `0x650100` changed from `53 48 83 ec 20 8b` to
+`b8 01 00 00 00 c3`. The inode and timestamps did not change.
+
+Apple XNU 11417.140.69 shows that the callback pointer is a const kernel alias
+of the actual `vm_page` in an external vnode-pager object. On the x86_64
+one-page path, `vm_paging_map_object` can return a direct `phystokv` alias.
+Writing after original validation mutates the shared resident page without a
+normal vnode/UPL write transaction or metadata update. Dirty/writeback state
+is not coherently controlled.
+
+The current source has removed every validation-page write. Dry-run detection
+remains; active mode fails closed with
+`outcome=unsafe-file-backed-write-blocked modified=no`. The 1.0.0-rc1 release
+candidate is revoked for active use. Full evidence and replacement options are
+in `FILE_BACKED_WRITE_INCIDENT.md`.
+
 ## Executive conclusion
 
 **Final recommendation for the current source and the published 1.0.0 binaries: Do not install.**
@@ -16,7 +42,7 @@ Two critical defects block a controlled test of the current release:
 
 Both defects can be mitigated with small, reviewable source changes. They are not reasons to abandon the Lilu architecture, but they are reasons not to boot the current build. A future controlled test should use a build made from reviewed, pinned source after the ABI, targeting, dependency, and patch-validation changes in this report. It should not use the existing release binary.
 
-The audit host was detected rather than assumed: macOS 15.7.7 (24G720), Darwin 24.6.0, x86_64, Xcode 16.4, Apple clang 17.0.0. The source's normal route on this host is `_cs_validate_page`. The exact running XNU build is newer than Apple's latest public Darwin 24 source snapshot inspected here, so private-ABI compatibility still requires runtime/build verification before testing.
+The audit host was detected rather than assumed: macOS 15.7.7 (24G720), Darwin 24.6.0, x86_64, Xcode 16.4, Apple clang 17.0.0. The source's normal route on this host is `_cs_validate_page`. Apple has since published the tested kernel's base XNU tag, `xnu-11417.140.69`; the running build reports the downstream suffix `11417.140.69.710.16~1`. The route was observed to install, but that does not make the callback writable or establish ABI support beyond this tested build.
 
 ## Scope and evidence
 
@@ -33,7 +59,7 @@ No release binary was downloaded or executed. The binary-to-source correspondenc
 
 ## Architecture overview
 
-IntelMKLFixup is not a normal userspace binary patcher and does not resolve an MKL symbol. It is an x86_64 Lilu plugin that routes a private XNU code-signing validation function. When XNU validates a file-backed userspace page or range, the wrapper first invokes XNU's original validator, obtains the vnode path, byte-scans the callback buffer, and overwrites every matching sequence in the VM page. The modified bytes can subsequently be mapped into a process while the on-disk file remains unchanged.
+IntelMKLFixup is not a normal userspace binary patcher and does not resolve an MKL symbol. It is an x86_64 Lilu plugin that routes a private XNU code-signing validation function. The audited historical implementation invoked XNU's original validator, obtained the vnode path, scanned the callback buffer, and overwrote matches in the vnode-pager-backed VM page. Hardware testing later proved that ordinary reads of the backing file returned those changed bytes; the claim that the disk file remained unchanged was false. Current source retains detection but blocks every active validation-page write.
 
 The data path is:
 
@@ -266,7 +292,10 @@ The wrapper does not check `vp`, `data`, `size`, or output pointers. Current pub
 
 Zero count patches all matches. There is no expected match count, state record, patch identifier, duplicate statistic, or already-patched pattern. Concurrent duplicate writes are possible because Lilu searches before taking its write lock.
 
-**Remediation:** define the expected match count per catalogue entry (normally exactly one per image), treat multiple matches as rejection, recognise the full already-patched form, and revalidate the search bytes immediately before writing.
+**Superseded remediation:** match-count and already-patched checks remain useful
+for detection, but no validation-buffer write is permitted. Any future
+replacement must revalidate bytes in a verified process-private/COW mapping
+immediately before a separately reviewed write.
 
 #### M-3 — Split signatures are silently missed
 
@@ -290,7 +319,7 @@ Every hooked validation first performs `vn_getpath`, using a `PATH_MAX` stack bu
 
 Path failure and no match are silent. A write-protection restore failure can still lead to a `Patched` message. The route failure message does not say which symbol was selected. There is no distinction among plugin loaded, candidate identified, signature found, dry run, bytes changed, duplicate, and functional success.
 
-**Remediation:** add bounded lifecycle/status events and separate status codes; never report success unless write protection was restored and the replacement was verified.
+**Remediation:** add bounded lifecycle/status events and separate status codes. Validation callbacks must remain detection-only; no write-protection or post-write verification scheme can make the vnode-backed callback page an acceptable destination.
 
 #### M-6 — Full user paths are logged outside explicit debug mode
 
@@ -341,7 +370,7 @@ There are no tests for matching, truncation, end-of-buffer behavior, mutated sig
 - **I-3:** No integer truncation occurs in the plugin's current `vm_size_t` to `size_t` call on x86_64. Lilu guards the subtraction by checking `dataSize < findSize` first.
 - **I-4:** A signature at the exact end of a range is handled correctly. A signature crossing a boundary is skipped.
 - **I-5:** Sequential reapplication to the same already-patched bytes does not match because the replacement differs from the search pattern.
-- **I-6:** There is no code that writes the backing file. The mutation is to the mapped validation page. The repository nevertheless has no test proving the disk file remains unchanged in every supported XNU path.
+- **I-6 (superseded):** The original audit observed no explicit vnode write and incorrectly treated validation-page mutation as memory-only. Hardware testing proved that ordinary file reads returned the replacement bytes with unchanged inode and timestamps. XNU source confirms that the callback aliases the vnode-pager-backed VM page. Current source blocks all validation-page writes.
 - **I-7:** If no supported bytes ever load, the system continues normally apart from hook overhead.
 - **I-8:** The replacement returns integer true only from the matched function entry. It makes no claim about MKL numerical correctness or non-MKL Intel-only instructions.
 - **I-9:** Logging occurs after Lilu releases its kernel-write lock. No per-call logging is enabled in current source; the commented line at `IntelMKLFixup.cpp:47` would be unsafe from a performance/privacy perspective if restored broadly.
@@ -407,7 +436,8 @@ The smallest safe sequence is:
 3. Add an AMD vendor gate before routing.
 4. Add a fail-closed image/application targeting policy before any byte scan.
 5. Convert the one pattern into a named catalogue entry with fixed lengths, exact version evidence, surrounding context, one-match policy, and already-patched form.
-6. Add explicit pointer/size checks and transactional revalidation immediately before write.
+6. Keep validation callback bytes const and detection-only; design a separate
+   process-private post-load patch path before considering any write.
 7. Replace forced registration with graceful failure and distinguish dry-run/candidate/match/write/verification statuses.
 8. Unit-test the pure policy/matching logic before producing a bootable artifact.
 
@@ -449,7 +479,10 @@ A patch should require all of the following:
 6. Exactly one named, compiled-in MKL patch definition matches its full exact signature and required surrounding context. Unknown and near-match variants are rejected.
 7. The replacement length equals the verified target length, the original bytes are rechecked under the write lock, and the expected match count is exactly one.
 
-Image/vnode identity is the primary boundary because the changed page can be shared. Process identity is an additional restriction, not a substitute. Bundle ID, team ID, UUID, and hash should be used only if their provenance and callback safety are verified.
+Image/vnode identity remains useful for detection, but no identity check makes
+a shared validation page a safe write destination. Any future write must target
+a verified private/COW mapping in the approved process after loading. Process
+identity is mandatory for that separate architecture.
 
 If any identifier is missing, ambiguous, stale, or contradictory, no scan or patch occurs. Future applications should be added as reviewed source records pairing narrowly defined identity rules with already-reviewed compiled patch definitions. A future remote whitelist may update identity rules only; it must not supply machine-code patterns or replacement bytes to the kernel.
 
@@ -458,4 +491,3 @@ If any identifier is missing, ambiguous, stale, or contradictory, no scan or pat
 1. **Initial OS scope:** for the first controlled Ryzen 9 3900X build, the safest choice is Darwin 24/macOS 15 only (the detected test environment), while retaining legacy code only after its ABI is fixed and separately tested. Confirm whether to narrow the first test build this way.
 2. **Discord channel scope:** the proposed built-in rule is Discord Stable only. Confirm whether PTB/Canary should remain excluded initially.
 3. **Known-good evidence:** Phase 2/3 will need the original, unpatched `discord_krisp.node` version/hash and the known-working Swift patch's exact search/replacement plus surrounding bytes for comparison. Confirm that these can be supplied or inspected locally before a patch definition is approved.
-

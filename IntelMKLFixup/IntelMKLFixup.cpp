@@ -46,19 +46,22 @@ static bool dryRunMode {false};
 static bool builtInOnlyRequested {false};
 static bool boundedWindowMode {false};
 
+// Architectural invariant: XNU's validation callback supplies a const alias of
+// a vnode-pager-backed page. It is detection input, never a writable runtime
+// patch destination.
+static constexpr bool ValidationCallbackWritePermitted {false};
+static_assert(!ValidationCallbackWritePermitted,
+	"validation callback pages must remain read-only");
+
 enum class ApplyResult : uint8_t {
 	DryRunMatch,
-	Patched,
+	UnsafeFileBackedWriteBlocked,
 	AlreadyPatched,
 	SignatureRejected,
 	RangeRejected,
 	ModeRejected,
 	AmbiguousPatch,
-	PolicyRejected,
-	ConcurrentChangeRejected,
-	WriteProtectionFailure,
-	RestoreProtectionFailure,
-	VerificationFailure
+	PolicyRejected
 };
 
 struct ApplyOutcome {
@@ -151,13 +154,17 @@ const char *variantResultReason(IMKLFX::VariantMatchState result) {
 	return "unknown";
 }
 
-ApplyOutcome applyApprovedPatch(const void *data, size_t size,
+ApplyOutcome evaluateApprovedMatch(const void *data, size_t size,
 	memory_object_offset_t pageOffset, const IMKLFX::ImageVariant &variant,
 	const IMKLFX::RuntimePolicyControls &controls, bool dryRun) {
 	const auto *bytes = static_cast<const uint8_t *>(data);
 	auto selection = IMKLFX::selectPolicyPatch(bytes, size, pageOffset, variant, controls);
-	if (selection.state == IMKLFX::TargetState::AlreadyPatched)
-		return {ApplyResult::AlreadyPatched, selection.patch, selection.targetFileOffset};
+	if (selection.state == IMKLFX::TargetState::AlreadyPatched) {
+		if (dryRun)
+			return {ApplyResult::AlreadyPatched, selection.patch, selection.targetFileOffset};
+		return {ApplyResult::UnsafeFileBackedWriteBlocked, selection.patch,
+			selection.targetFileOffset};
+	}
 	if (selection.state == IMKLFX::TargetState::NotCovered)
 		return {ApplyResult::RangeRejected, nullptr, 0};
 	if (selection.state == IMKLFX::TargetState::ModeDisabled)
@@ -170,33 +177,13 @@ ApplyOutcome applyApprovedPatch(const void *data, size_t size,
 		return {ApplyResult::SignatureRejected, nullptr, 0};
 	if (dryRun)
 		return {ApplyResult::DryRunMatch, selection.patch, selection.targetFileOffset};
-	if (KernelPatcher::kernelWriteLock == nullptr ||
-		MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return {ApplyResult::WriteProtectionFailure, selection.patch,
-			selection.targetFileOffset};
 
-	ApplyResult result = ApplyResult::ConcurrentChangeRejected;
-	const auto *matchedPatch = selection.patch;
-	const uint64_t matchedOffset = selection.targetFileOffset;
-	selection = IMKLFX::selectPolicyPatch(bytes, size, pageOffset, variant, controls);
-	if (selection.state == IMKLFX::TargetState::AlreadyPatched &&
-		selection.patch == matchedPatch && selection.targetFileOffset == matchedOffset) {
-		result = ApplyResult::AlreadyPatched;
-	} else if (selection.state == IMKLFX::TargetState::Original &&
-		selection.patch == matchedPatch && selection.targetFileOffset == matchedOffset) {
-		auto target = IMKLFX::targetPointer(const_cast<uint8_t *>(bytes), size,
-			pageOffset, matchedOffset, *matchedPatch);
-		if (target != nullptr) {
-			lilu_os_memcpy(target, matchedPatch->replacement, matchedPatch->replacementSize);
-			result = IMKLFX::classifyCandidateAt(bytes, size, pageOffset,
-				matchedOffset, variant, *matchedPatch) == IMKLFX::TargetState::AlreadyPatched ?
-				ApplyResult::Patched : ApplyResult::VerificationFailure;
-		}
-	}
-
-	if (MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) != KERN_SUCCESS)
-		return {ApplyResult::RestoreProtectionFailure, matchedPatch, matchedOffset};
-	return {result, matchedPatch, matchedOffset};
+	// Darwin 24 supplies a read-only kernel alias of a vnode-pager-backed VM
+	// page here. Hardware testing proved that writing through this alias changes
+	// bytes returned by ordinary reads of the backing file. This callback is a
+	// detection boundary only; it must never be treated as a runtime patch target.
+	return {ApplyResult::UnsafeFileBackedWriteBlocked, selection.patch,
+		selection.targetFileOffset};
 }
 
 void logApplyOutcome(const IMKLFX::ImageVariant &variant,
@@ -218,22 +205,15 @@ void logApplyOutcome(const IMKLFX::ImageVariant &variant,
 					static_cast<unsigned long long>(outcome.targetFileOffset));
 			}
 			break;
-		case ApplyResult::Patched:
-			if (bounded) {
-				SYSLOG(MODULE_SHORT,
-					"image=%s patch=%s search=unique-supported-signature outcome=patched modified=yes offset=0x%llx",
-					variant.identifier, patchIdentifier,
-					static_cast<unsigned long long>(outcome.targetFileOffset));
-			} else {
-				SYSLOG(MODULE_SHORT,
-					"image=%s patch=%s signature=supported outcome=patched modified=yes offset=0x%llx",
-					variant.identifier, patchIdentifier,
-					static_cast<unsigned long long>(outcome.targetFileOffset));
-			}
+		case ApplyResult::UnsafeFileBackedWriteBlocked:
+			SYSLOG(MODULE_SHORT,
+				"image=%s patch=%s outcome=unsafe-file-backed-write-blocked modified=no offset=0x%llx",
+				variant.identifier, patchIdentifier,
+				static_cast<unsigned long long>(outcome.targetFileOffset));
 			break;
 		case ApplyResult::AlreadyPatched:
 			SYSLOG(MODULE_SHORT,
-				"image=%s patch=%s outcome=already-patched offset=0x%llx",
+				"image=%s patch=%s outcome=already-patched modified=no offset=0x%llx",
 				variant.identifier, patchIdentifier,
 				static_cast<unsigned long long>(outcome.targetFileOffset));
 			break;
@@ -271,22 +251,6 @@ void logApplyOutcome(const IMKLFX::ImageVariant &variant,
 			SYSLOG(MODULE_SHORT,
 				"image=%s patch=%s outcome=policy-rejected",
 				variant.identifier, patchIdentifier);
-			break;
-		case ApplyResult::ConcurrentChangeRejected:
-			SYSLOG(MODULE_SHORT, "image=%s patch=%s outcome=rejected reason=concurrent-change",
-				variant.identifier, patchIdentifier);
-			break;
-		case ApplyResult::WriteProtectionFailure:
-			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-change",
-				patchIdentifier);
-			break;
-		case ApplyResult::RestoreProtectionFailure:
-			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=write-protection-restore",
-				patchIdentifier);
-			break;
-		case ApplyResult::VerificationFailure:
-			SYSLOG(MODULE_SHORT, "patch=%s outcome=error reason=replacement-verification",
-				patchIdentifier);
 			break;
 	}
 }
@@ -373,7 +337,7 @@ void inspectValidatedPage(vnode_t vp, memory_object_offset_t pageOffset,
 		variant.application->identifier, variant.identifier,
 		variant.application->signingIdentifier,
 		static_cast<unsigned long>(variant.allowedPatchCount));
-	logApplyOutcome(variant, applyApprovedPatch(data, PAGE_SIZE, pageOffset,
+	logApplyOutcome(variant, evaluateApprovedMatch(data, PAGE_SIZE, pageOffset,
 		variant, controls, dryRunMode));
 }
 

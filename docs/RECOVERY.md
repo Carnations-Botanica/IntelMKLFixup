@@ -1,5 +1,30 @@
 # Emergency recovery
 
+## Validation-page write incident
+
+The 1.0.0-rc1 active path is revoked. Hardware testing proved that it can
+change the vnode-backed `discord_krisp.node` page and cache-visible file
+contents without advancing mtime or ctime. Disabling the kext prevents further
+writes but does not prove that the affected module is restored.
+
+After disabling IntelMKLFixup, use the existing Swift patcher manually to
+restore the exact active module or reinstall the matching Discord version from
+a trusted source. Verify the restored file by content and signature:
+
+```sh
+/usr/bin/shasum -a 256 "$KRISP_MODULE"
+/usr/bin/codesign --verify --strict --verbose=4 "$KRISP_MODULE"
+```
+
+For the incident fixture, the required restored hash is:
+
+```text
+de061edb4387fc5bba2b8535483aa2f4347c17bc9e4d25babef36172c86a9f9a
+```
+
+Do not rely on inode, mtime, or ctime; those remained unchanged during the
+observed mutation. Do not use runtime write-then-restore as a mitigation.
+
 Keep the known-good bootable USB EFI connected and confirmed bootable before
 testing IntelMKLFixup. The recovery operation changes only the internal NVMe
 EFI selected after inspection; it does not require changing the Discord
@@ -65,8 +90,7 @@ installation.
 
 ## Non-emergency disable
 
-For a controlled negative test, append `-imklfxoff` to the existing OpenCore
-`boot-args` and reboot. This is preferable to editing kext files for routine
-testing. It is not a substitute for the USB recovery path if OpenCore cannot
-reach macOS.
-
+Append `-imklfxoff` to the existing OpenCore `boot-args` and reboot when removal
+is not immediately practical. Active mode must not be used. This is not a
+substitute for restoring the affected Discord module or for the USB recovery
+path if OpenCore cannot reach macOS.

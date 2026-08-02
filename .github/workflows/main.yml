@@ -44,6 +44,7 @@ jobs:
       - name: Validate repository and manifest
         run: |
           git diff --check
+          sh Tests/check_validation_callback_read_only.sh
           plutil -lint IntelMKLFixup/Info.plist
           clang++ -std=c++14 -Wall -Wextra -Werror -pedantic \
             Tests/PolicyTests/PolicyTests.cpp -o "$RUNNER_TEMP/imklfx-policy-tests"
