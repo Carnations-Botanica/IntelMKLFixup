@@ -3,7 +3,7 @@ import WhitelistCore
 
 @main
 struct WhitelistUpdaterCommand {
-	static let pluginVersion = try! SemanticVersion("1.0.0")
+	static let pluginVersion = try! SemanticVersion("0.2.0")
 
 	static func main() async {
 		do {

@@ -3,6 +3,7 @@ set -eu
 
 source_file="IntelMKLFixup/IntelMKLFixup.cpp"
 policy_file="IntelMKLFixup/IntelMKLFixupPolicy.hpp"
+manifest_schema="whitelist/manifest.schema.json"
 
 test "$(grep -c 'lilu_os_memcpy' "$source_file")" -eq 1
 grep -Fq 'applyAcknowledgedStrictFileBackedPatch' "$source_file"
@@ -22,6 +23,12 @@ fi
 if grep -En '#include .*socket|#include .*network|http|URLSession|connect\(' \
 		"$source_file" "$policy_file"; then
 	echo "networking primitive found in kernel-facing source" >&2
+	exit 1
+fi
+
+if grep -Eiq '"(search|replacement|machine_code|script|url)_bytes"' \
+		"$manifest_schema"; then
+	echo "remote manifest schema can carry machine-code material" >&2
 	exit 1
 fi
 

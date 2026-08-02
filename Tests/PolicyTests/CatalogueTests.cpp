@@ -87,6 +87,37 @@ void testStrictPolicyPrecedesWindowWhenBothApprove() {
 	assert(selection.variant == &IMKLFX::DiscordStable00403KrispX8664);
 }
 
+void testStrictIdentityAndOffsetRejectPrecisely() {
+	const IMKLFX::ImageVariant *strict[] = {
+		&IMKLFX::DiscordStable00403KrispX8664
+	};
+	auto wrong = StrictIdentity;
+	wrong.codeDirectoryHash = ArbitraryChangedCdHash;
+	assert(IMKLFX::selectImageVariant(strict, 1, DiscordCurrentPath,
+		sizeof(DiscordCurrentPath) - 1, 0x650000,
+		IMKLFX::X8664ValidationPageSize, wrong, WindowOff).state ==
+		IMKLFX::VariantMatchState::CodeDirectoryHashRejected);
+
+	wrong = StrictIdentity;
+	wrong.signingIdentifier = "not.discord_krisp";
+	assert(IMKLFX::selectImageVariant(strict, 1, DiscordCurrentPath,
+		sizeof(DiscordCurrentPath) - 1, 0x650000,
+		IMKLFX::X8664ValidationPageSize, wrong, WindowOff).state ==
+		IMKLFX::VariantMatchState::SigningIdentifierRejected);
+
+	wrong = StrictIdentity;
+	wrong.teamIdentifier = "AAAAAAAAAA";
+	assert(IMKLFX::selectImageVariant(strict, 1, DiscordCurrentPath,
+		sizeof(DiscordCurrentPath) - 1, 0x650000,
+		IMKLFX::X8664ValidationPageSize, wrong, WindowOff).state ==
+		IMKLFX::VariantMatchState::TeamIdentifierRejected);
+
+	assert(IMKLFX::selectImageVariant(strict, 1, DiscordCurrentPath,
+		sizeof(DiscordCurrentPath) - 1, 0x651000,
+		IMKLFX::X8664ValidationPageSize, StrictIdentity, WindowOff).state ==
+		IMKLFX::VariantMatchState::NotCandidate);
+}
+
 void testChangedVersionCdHashAndOffsetUseWindow() {
 	const IMKLFX::ImageVariant *variants[] = {
 		&IMKLFX::DiscordStable00403KrispX8664,
@@ -168,6 +199,7 @@ int main() {
 	testDiscordPathGrammar();
 	testStrictFixtureIsRetained();
 	testStrictPolicyPrecedesWindowWhenBothApprove();
+	testStrictIdentityAndOffsetRejectPrecisely();
 	testChangedVersionCdHashAndOffsetUseWindow();
 	testWindowBootGateAndIdentityRejections();
 	testTargetOutsideWindowAndNonWhitelistBytesReject();

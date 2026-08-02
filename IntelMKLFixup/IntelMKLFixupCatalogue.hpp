@@ -164,7 +164,7 @@ static constexpr ImageVariant DiscordStable00403KrispX8664 {
 	DiscordStable00403KrispAllowedPatches,
 	sizeof(DiscordStable00403KrispAllowedPatches) /
 		sizeof(DiscordStable00403KrispAllowedPatches[0]),
-	"Initial Discord Stable/Krisp controlled-test fixture; functional runtime test pending"
+	"Controlled Darwin 24 fixture; strict file-backed patch tested successfully"
 };
 
 // This policy searches exactly one approved validation window. Version and
@@ -186,7 +186,7 @@ static constexpr ImageVariant DiscordStableKrispBoundedWindowX8664 {
 	DiscordStable00403KrispAllowedPatches,
 	sizeof(DiscordStable00403KrispAllowedPatches) /
 		sizeof(DiscordStable00403KrispAllowedPatches[0]),
-	"Experimental one-page Discord Stable/Krisp policy; requires -imklfxwindow"
+	"Detection/dry-run research only; requires -imklfxwindow and cannot write"
 };
 
 static constexpr const ApplicationRule *BuiltInApplicationRules[] = {

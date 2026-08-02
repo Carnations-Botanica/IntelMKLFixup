@@ -13,6 +13,7 @@ permissions:
 env:
   LILU_COMMIT: e4748cc081bf060302c7d3c44a643ce1d11b7e1d
   MACKERNELSDK_COMMIT: 05094e5e88cec7caedbfb35e8449ed0db94bf95b
+  IMKLFX_VERSION: 0.2.0
   ZERO_AR_DATE: "1"
 
 jobs:
@@ -44,8 +45,9 @@ jobs:
       - name: Validate repository and manifest
         run: |
           git diff --check
-          sh Tests/check_validation_callback_read_only.sh
+          sh Tests/check_file_backed_write_scope.sh
           plutil -lint IntelMKLFixup/Info.plist
+          plutil -lint Tools/MKLPatcher/Info.plist
           clang++ -std=c++14 -Wall -Wextra -Werror -pedantic \
             Tests/PolicyTests/PolicyTests.cpp -o "$RUNNER_TEMP/imklfx-policy-tests"
           "$RUNNER_TEMP/imklfx-policy-tests"
@@ -53,6 +55,7 @@ jobs:
             Tests/PolicyTests/CatalogueTests.cpp -o "$RUNNER_TEMP/imklfx-catalogue-tests"
           "$RUNNER_TEMP/imklfx-catalogue-tests"
           swift test -Xswiftc -warnings-as-errors
+          swift test --package-path Tools/MKLPatcher -Xswiftc -warnings-as-errors
           swift run imklfx-whitelist validate --manifest whitelist/manifest.json
 
       - name: Derive reproducible source timestamp
@@ -84,23 +87,29 @@ jobs:
       - name: Build Debug and Release kexts
         run: |
           xcodebuild -jobs 1 -scheme IntelMKLFixup -configuration Debug \
-            GCC_TREAT_WARNINGS_AS_ERRORS=YES
+            GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+            SYMROOT="$GITHUB_WORKSPACE/build"
           xcodebuild -jobs 1 -scheme IntelMKLFixup -configuration Release \
-            GCC_TREAT_WARNINGS_AS_ERRORS=YES
+            GCC_TREAT_WARNINGS_AS_ERRORS=YES \
+            SYMROOT="$GITHUB_WORKSPACE/build"
 
       - name: Build userspace tools
-        run: swift build -c release -Xswiftc -warnings-as-errors -Xswiftc -gnone
+        run: |
+          swift build -c release -Xswiftc -warnings-as-errors -Xswiftc -gnone
+          swift build --package-path Tools/MKLPatcher -c release \
+            -Xswiftc -warnings-as-errors
 
       - name: Assemble release directory
         run: |
-          mkdir -p release
-          cp build/Debug/*.zip release/
-          cp build/Release/*.zip release/
-          cp .build/release/imklfx-whitelist release/
-          cp whitelist/manifest.json release/whitelist-manifest.json
-          cp whitelist/manifest.schema.json release/
-          cp whitelist/signature.schema.json release/
-          cp LICENSE THIRD_PARTY_NOTICES.md release/
+          package_root="release/IntelMKLFixup-${IMKLFX_VERSION}"
+          mkdir -p "$package_root"
+          ditto build/Release/IntelMKLFixup.kext "$package_root/IntelMKLFixup.kext"
+          ditto build/Debug/IntelMKLFixup.kext \
+            "release/IntelMKLFixup-${IMKLFX_VERSION}-Debug.kext"
+          cp README.md INSTALLATION.md RECOVERY.md CHANGELOG.md LICENSE "$package_root/"
+          (cd "$package_root" && shasum -a 256 IntelMKLFixup.kext/Contents/MacOS/IntelMKLFixup > SHA256SUMS.txt)
+          ditto -c -k --keepParent "$package_root" \
+            "release/IntelMKLFixup-${IMKLFX_VERSION}.zip"
           {
             echo "source_commit=$GITHUB_SHA"
             echo "lilu_commit=$LILU_COMMIT"
@@ -111,19 +120,12 @@ jobs:
             clang --version
           } > release/BUILD_INFO.txt
 
-      - name: Sign whitelist release asset
-        if: github.event_name == 'release'
-        env:
-          IMKLFX_SIGNING_KEY_ID: ${{ vars.IMKLFX_SIGNING_KEY_ID }}
-          IMKLFX_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.IMKLFX_SIGNING_PRIVATE_KEY_BASE64 }}
-        run: |
-          .build/release/imklfx-whitelist-sign \
-            --manifest release/whitelist-manifest.json \
-            --output release/whitelist-manifest.json.sig
-
       - name: Generate SHA-256 inventory
         working-directory: release
-        run: shasum -a 256 * > SHA256SUMS
+        run: |
+          shasum -a 256 IntelMKLFixup-${IMKLFX_VERSION}.zip \
+            IntelMKLFixup-${IMKLFX_VERSION}-Debug.kext/Contents/MacOS/IntelMKLFixup \
+            > SHA256SUMS.txt
 
       - name: Upload workflow artefacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -149,4 +151,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" release/* --clobber
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            release/IntelMKLFixup-0.2.0.zip \
+            release/SHA256SUMS.txt --clobber

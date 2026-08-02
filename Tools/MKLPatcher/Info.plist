@@ -9,7 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>MKLPatcher</string>
     <key>CFBundleIdentifier</key>
-    <string>local.mklpatcher.app</string>
+    <string>com.richardhedges.IntelMKLFixup.MKLPatcher</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -17,7 +17,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -28,4 +28,3 @@
     <string>NSApplication</string>
 </dict>
 </plist>
-

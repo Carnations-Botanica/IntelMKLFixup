@@ -5,7 +5,7 @@ import XCTest
 
 final class WhitelistCoreTests: XCTestCase {
 	private let now = Date(timeIntervalSince1970: 1_785_542_400) // 2026-07-31T00:00:00Z
-	private let pluginVersion = try! SemanticVersion("1.0.0")
+	private let pluginVersion = try! SemanticVersion("0.2.0")
 	private let keyID = "imklfx-test-rfc8032"
 	private let privateKey = Data(hex: "9d61b19deffd5a60ba844af492ec2cc4" +
 		"4449c5697b326919703bac031cae7f60")!
@@ -441,8 +441,8 @@ final class WhitelistCoreTests: XCTestCase {
 			"generated_at": "2026-07-30T00:00:00Z",
 			"expires_at": "2027-07-30T00:00:00Z",
 			"plugin_compatibility": [
-				"minimum": "1.0.0",
-				"maximum": "1.0.0"
+				"minimum": "0.2.0",
+				"maximum": "0.2.0"
 			],
 			"application_rules": [[
 				"id": "discord-stable-krisp",

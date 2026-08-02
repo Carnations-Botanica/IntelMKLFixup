@@ -1,5 +1,5 @@
 {
-  "$id": "https://github.com/Carnations-Botanica/IntelMKLFixup/blob/main/whitelist/manifest.schema.json",
+  "$id": "https://github.com/richardhedges/IntelMKLFixup/blob/main/whitelist/manifest.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {

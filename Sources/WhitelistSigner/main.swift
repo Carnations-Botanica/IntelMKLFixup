@@ -36,7 +36,7 @@ struct WhitelistSignerCommand {
 		let manifestURL = URL(fileURLWithPath: arguments[1])
 		let outputURL = URL(fileURLWithPath: arguments[3])
 		let manifestData = try Data(contentsOf: manifestURL)
-		let pluginVersion = try SemanticVersion("1.0.0")
+		let pluginVersion = try SemanticVersion("0.2.0")
 		_ = try ManifestValidator().validate(manifestData, pluginVersion: pluginVersion)
 
 		let configured = try ReleaseTrust.trustRoot()

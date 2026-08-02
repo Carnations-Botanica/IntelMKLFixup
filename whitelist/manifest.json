@@ -55,8 +55,8 @@
   ],
   "manifest_version": 3,
   "plugin_compatibility": {
-    "maximum": "1.0.0",
-    "minimum": "1.0.0"
+    "maximum": "0.2.0",
+    "minimum": "0.2.0"
   },
   "schema_version": 3
 }

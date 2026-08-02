@@ -13,7 +13,7 @@ public struct DownloadedReleaseArtifact {
 }
 
 public final class GitHubReleaseClient {
-	public static let repository = "Carnations-Botanica/IntelMKLFixup"
+	public static let repository = "richardhedges/IntelMKLFixup"
 	public static let manifestAssetName = "whitelist-manifest.json"
 	public static let signatureAssetName = "whitelist-manifest.json.sig"
 
