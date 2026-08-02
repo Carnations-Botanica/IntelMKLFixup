@@ -1,75 +1,64 @@
-# CRITICAL SAFETY NOTICE
+# IntelMKLFixup
 
-**Do not use the 1.0.0-rc1 kext in active mode.** Controlled Ryzen 9 3900X
-testing proved that its write through `_cs_validate_page` changes the
-vnode-backed `discord_krisp.node` page and becomes visible through ordinary
-file reads without advancing mtime or ctime. The candidate is revoked for
-active use. See [FILE_BACKED_WRITE_INCIDENT.md](FILE_BACKED_WRITE_INCIDENT.md).
+IntelMKLFixup is an experimental Lilu plugin for x86_64 AMD Hackintosh
+systems. It identifies explicitly approved applications containing reviewed
+Intel MKL CPU-vendor predicates and applies a compatibility patch while macOS
+validates the executable page.
 
-Current source is detection-only: dry-run can report an eligible exact match,
-while non-dry-run operation fails closed with
-`outcome=unsafe-file-backed-write-blocked modified=no`. No safe runtime
-replacement has been implemented.
+On tested Darwin 24 systems, the validation page is vnode/UBC-backed. The
+changed bytes therefore become visible through the application binary even
+though the plugin does not perform a conventional filesystem write. This is
+not a process-private or guaranteed transient in-memory patcher.
 
-Me (Kaitlyn), or Carnations Botanica is not responsible for data loss incurred
-by using this experimental kernel extension.
+Version 0.2.0 supports one strict Discord Stable/Krisp image variant on Darwin
+24. It requires an AMD CPU, the exact path grammar, basename, signing
+identifier, Team ID, CDHash, page offset, MKL implementation bytes, and
+surrounding context compiled into the kext. Unknown binaries fail closed.
 
-## IntelMKLFixup
-Dead-simple Intel(tm) MKL (Math Kernel Library) patcher for macOS, with a twist.
+## Explicit operating modes
 
-The patch engine is application-independent: reviewed MKL vendor-gate
-implementations are eligible only when a separate built-in application and
-image-variant policy approves the native module. Discord Stable/Krisp is the
-first controlled-test fixture, not the product boundary.
+Active writing is opt-in:
 
-## Why?
-Hackintoshes with AMD CPUs have infamously had a problem with software compiled against Intel's MKL, often resulting in many popular applications just not running correctly or at all.
+| Boot arguments | Behaviour |
+| --- | --- |
+| `-imklfxoff` | Disable the plugin. |
+| none | Detect and log approved matches; never write. |
+| `-imklfxdryrun` | Detection only; never write. |
+| `-imklfxfilepatch -imklfxdryrun` | Acknowledged detection-only test. |
+| `-imklfxfilepatch` | Permit only the reviewed `StrictVariant` file-backed page patch. |
+| `-imklfxdbg` | Add verbose diagnostic logging. |
 
-The project is investigating whether a strictly process-private runtime patch
-can bypass this vendor gate safely. The former validation-page write is not an
-in-memory-only mechanism and has been disabled. Until a replacement
-architecture is reviewed and implemented, this repository provides only
-bounded detection, policy, catalogue, and update tooling.
+`BoundedWindow` remains detection/dry-run research code behind
+`-imklfxwindow`. It can never write and is never an active fallback from a
+strict rule. No image-wide scanning exists.
 
-## Requirements
+## Important risks
 
-- an x86_64 AMD Hackintosh;
-- macOS 15 / Darwin 24 (the only runtime enabled by this release candidate);
-- [Lilu](https://github.com/acidanthera/Lilu/releases), loaded before
-  IntelMKLFixup; and
-- a known-good recovery EFI that has been boot-tested before installation.
+By enabling `-imklfxfilepatch`, users explicitly accept:
 
-## Testing controls
+- file-visible binary modification and possible code-signature invalidation;
+- undocumented VM, UBC, and kernel behaviour;
+- crashes, application failure, or boot instability after updates;
+- the need for current backups and a known-working recovery EFI.
 
-The former release candidate passed clean builds, host tests, sanitizers,
-static analysis, and artifact inspection, but hardware testing invalidated its
-core memory-only assumption. Active testing is prohibited. The revised
-[TEST_PLAN_3900X.md](TEST_PLAN_3900X.md) permits recovery verification and
-detection-only dry-run evidence; it is not a runtime-patch plan.
-See [diagnostics and controls](docs/DEBUGGING.md) for boot arguments and exact
-log commands, and [emergency recovery](docs/RECOVERY.md) before attempting the
-controlled test.
+Physical persistence to storage is neither guaranteed nor relied upon. If an
+application binary is observed in a modified state, restore it from a known
+good backup or the application vendor.
 
-Two runtime policy modes are compiled: StrictVariant requires the reviewed
-binary identity and exact file offset; experimental BoundedWindow requires
-`-imklfxwindow` and searches exactly one approved callback-complete validation
-window no larger than one x86_64 page. It proves uniqueness only within that
-window. Future image-wide tolerance requires the separately designed
-userspace-assisted ImageScan architecture; it is not implemented.
+Read [INSTALLATION.md](INSTALLATION.md), [RECOVERY.md](RECOVERY.md), and
+[docs/FILE_BACKED_PATCHING.md](docs/FILE_BACKED_PATCHING.md) before use.
+Build and test instructions are in [BUILDING.md](BUILDING.md) and
+[docs/TESTING.md](docs/TESTING.md).
 
-The reviewed patch bypasses one exact Intel MKL CPU-vendor gate by replacing
-its supported implementation with `mov eax, 1; ret`. It does not replace
-numerical MKL routines, prove that all MKL operations are correct on AMD, or
-make arbitrary Intel-only software compatible. Unknown applications and MKL
-implementations are left untouched.
+## Project scope
 
-Whitelist release assets are handled only by the signed userspace mechanism
-described in [whitelist updates](docs/WHITELIST_UPDATES.md). The kernel extension
-does not contact GitHub or parse an external manifest. Installing a userspace
-manifest does not change runtime behaviour in the current release.
+This is a personal Hackintosh compatibility experiment, not a general-purpose
+binary patcher and not a security boundary. It has no installer, does not edit
+OpenCore configuration, and performs no kernel networking. Remote whitelist
+metadata can select only identifiers compiled into a reviewed build; it cannot
+supply machine-code search or replacement bytes.
 
-## Credits & Thanks
-- [vit9696](https://github.com/vit9696) (and contributors) for [RestrictEvents](https://github.com/acidanthera/RestrictEvents), which served as the basis for this project.
-- [Tomnic](https://macos86.it/profile/69-tomnic/) for [the original patching guide](https://macos86.it/topic/5489-tutorial-for-patching-binaries-for-amd-hackintosh-compatibility/), which helped point me in the right direction.
-- [NyaomiDEV](https://github.com/NyaomiDEV) for [AMDFriend](https://github.com/NyaomiDEV/AMDFriend), which served as inspiration for this project.
-- And to anybody who gave me words of encouragement or helped me figure out kernel extension development, thank you.
+The original project is
+[Carnations-Botanica/IntelMKLFixup](https://github.com/Carnations-Botanica/IntelMKLFixup).
+This fork preserves upstream credit while documenting the measured file-visible
+behaviour honestly.

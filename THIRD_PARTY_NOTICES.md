@@ -1,9 +1,9 @@
 # Third-party notices
 
 IntelMKLFixup remains distributed under the licence in [`LICENSE`](LICENSE).
-No third-party Swift package source is vendored by the Phase 5 userspace
-updater. It uses Apple's Foundation, CryptoKit, and XCTest frameworks supplied
-by the installed macOS/Swift SDK.
+No third-party Swift package source is vendored by the userspace tools. They use
+Apple's Foundation, CryptoKit, SwiftUI, and testing frameworks supplied by the
+installed macOS/Swift SDK.
 
 The signature tests use the public Ed25519 test key material from
 [RFC 8032, section 7.1](https://www.rfc-editor.org/rfc/rfc8032#section-7.1).
