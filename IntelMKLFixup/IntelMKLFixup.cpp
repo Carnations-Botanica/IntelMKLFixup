@@ -97,7 +97,7 @@ PluginConfiguration ADDPR(config) {
 	bootargBeta,
 	arrsize(bootargBeta),
 	KernelVersion::HighSierra,
-	KernelVersion::Sequoia,
+	KernelVersion::Tahoe,
 	[]() {
 		DBGLOG(MODULE_SHORT, "Intel(tm) Math Kernel Library fixup plugin loaded");
 		
